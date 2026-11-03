@@ -172,11 +172,21 @@ static void tone_test(void) {
     rc = usbHsIfCtrlXfer(&s, 0x21, 0x01, 0x0100, (u16)((CLOCK_ID << 8) | 0), 4, buf, &got);
     OUT("set rate 48000: rc=0x%x\n", rc);
 
-    // 2) select alt setting (standard SET_INTERFACE)
-    rc = usbHsIfCtrlXfer(&s, 0x01, 0x0B, STREAM_ALT, STREAM_IF, 0, buf, &got);
-    OUT("set alt %d: rc=0x%x\n", STREAM_ALT, rc);
+    // 2) select alt setting through usb:hs so Horizon refreshes its endpoint list
+    UsbHsInterfaceInfo info;
+    memset(&info, 0, sizeof(info));
+    rc = usbHsIfSetInterface(&s, &info, STREAM_ALT);
+    OUT("set alt %d (usb:hs): rc=0x%x\n", STREAM_ALT, rc);
+    if (R_SUCCEEDED(rc)) {
+        OUT("  now alt %d, eps %d\n", info.interface_desc.bAlternateSetting, info.interface_desc.bNumEndpoints);
+        for (int j = 0; j < 15; j++) {
+            struct usb_endpoint_descriptor *e = &info.output_endpoint_descs[j];
+            if (e->bLength) OUT("  OUT ep 0x%02x attr 0x%02x pkt %u itv %u\n",
+                                e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
+        }
+    }
 
-    // 3) open the isochronous OUT endpoint
+    // 3) open the isochronous OUT endpoint (prefer the descriptor Horizon reports)
     struct usb_endpoint_descriptor desc;
     memset(&desc, 0, sizeof(desc));
     desc.bLength = 7;
@@ -185,10 +195,18 @@ static void tone_test(void) {
     desc.bmAttributes = 0x0d;
     desc.wMaxPacketSize = PKT_BYTES;
     desc.bInterval = 1;
+    for (int j = 0; j < 15; j++) {
+        if (info.output_endpoint_descs[j].bLength && info.output_endpoint_descs[j].bEndpointAddress == STREAM_EP)
+            desc = info.output_endpoint_descs[j];
+    }
 
     UsbHsClientEpSession ep;
-    rc = usbHsIfOpenUsbEp(&s, &ep, 1, CHUNK_BYTES, &desc);
-    OUT("open ep 0x%02x: rc=0x%x\n", STREAM_EP, rc);
+    u32 sizes[3] = { CHUNK_BYTES, PKT_BYTES, 0x1000 };
+    for (int k = 0; k < 3; k++) {
+        rc = usbHsIfOpenUsbEp(&s, &ep, 1, sizes[k], &desc);
+        OUT("open ep 0x%02x (maxXfer %u): rc=0x%x\n", STREAM_EP, sizes[k], rc);
+        if (R_SUCCEEDED(rc)) break;
+    }
 
     if (R_SUCCEEDED(rc)) {
         double phase = 0.0, step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
@@ -212,7 +230,7 @@ static void tone_test(void) {
     }
 
     // back to alt 0 (no bandwidth)
-    usbHsIfCtrlXfer(&s, 0x01, 0x0B, 0, STREAM_IF, 0, buf, &got);
+    usbHsIfSetInterface(&s, &info, 0);
     free(buf);
     usbHsIfClose(&s);
     if (g_log) fflush(g_log);
