@@ -8,7 +8,7 @@ TARGET  := usbaudio_probe
 ARCH    := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS  := -O2 -Wall -ffunction-sections $(ARCH) -D__SWITCH__ -I$(DEVKITPRO)/libnx/include
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH)
-LIBS    := -L$(DEVKITPRO)/libnx/lib -lnx
+LIBS    := -L$(DEVKITPRO)/libnx/lib -lnx -lm
 
 all: $(TARGET).nro
 

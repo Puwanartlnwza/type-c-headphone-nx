@@ -1,9 +1,11 @@
 // USB Audio Probe v2
+// Y = play a 3 s 440 Hz test tone on the EarPods (low volume)
 // A = rescan interfaces, X = acquire device and dump full config descriptor
 // (hex + parsed alt settings / endpoints / formats / clock + sample rates),
 // + = exit. Everything is also written to sdmc:/usbaudio_probe.txt
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <switch.h>
 
@@ -138,6 +140,84 @@ static void dump_config(void) {
     if (g_log) fflush(g_log);
 }
 
+// ---- tone test: 440 Hz sine, 48 kHz / 16-bit / stereo, ~3 s, LOW volume ----
+#define STREAM_IF   1      // Audio Streaming (playback)
+#define STREAM_ALT  2      // alt 2 = 16-bit stereo, 192-byte packets
+#define STREAM_EP   0x02
+#define PKT_BYTES   192
+#define CLOCK_ID    9
+#define CHUNK_PKTS  20     // 20 ms per post
+#define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
+
+static void tone_test(void) {
+    s32 idx = -1;
+    for (s32 i = 0; i < g_total && i < 16; i++) {
+        struct usb_interface_descriptor *d = &g_ifs[i].inf.interface_desc;
+        if (d->bInterfaceClass == 1 && d->bInterfaceSubClass == 2 && d->bInterfaceNumber == STREAM_IF) { idx = i; break; }
+    }
+    if (idx < 0) { OUT("streaming interface not found: press A to scan first\n"); return; }
+
+    UsbHsClientIfSession s;
+    Result rc = usbHsAcquireUsbIf(&s, &g_ifs[idx]);
+    OUT("tone: acquire if#%d: 0x%x\n", STREAM_IF, rc);
+    if (R_FAILED(rc)) return;
+
+    u8 *buf = aligned_alloc(0x1000, 0x2000);
+    if (!buf) { OUT("alloc failed\n"); usbHsIfClose(&s); return; }
+    u32 got = 0;
+
+    // 1) sample rate -> 48000 (UAC2 SET_CUR on clock source)
+    u32 hz = 48000;
+    memcpy(buf, &hz, 4);
+    rc = usbHsIfCtrlXfer(&s, 0x21, 0x01, 0x0100, (u16)((CLOCK_ID << 8) | 0), 4, buf, &got);
+    OUT("set rate 48000: rc=0x%x\n", rc);
+
+    // 2) select alt setting (standard SET_INTERFACE)
+    rc = usbHsIfCtrlXfer(&s, 0x01, 0x0B, STREAM_ALT, STREAM_IF, 0, buf, &got);
+    OUT("set alt %d: rc=0x%x\n", STREAM_ALT, rc);
+
+    // 3) open the isochronous OUT endpoint
+    struct usb_endpoint_descriptor desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.bLength = 7;
+    desc.bDescriptorType = 5;
+    desc.bEndpointAddress = STREAM_EP;
+    desc.bmAttributes = 0x0d;
+    desc.wMaxPacketSize = PKT_BYTES;
+    desc.bInterval = 1;
+
+    UsbHsClientEpSession ep;
+    rc = usbHsIfOpenUsbEp(&s, &ep, 1, CHUNK_BYTES, &desc);
+    OUT("open ep 0x%02x: rc=0x%x\n", STREAM_EP, rc);
+
+    if (R_SUCCEEDED(rc)) {
+        double phase = 0.0, step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
+        int errs = 0, ok = 0;
+        for (int c = 0; c < 150; c++) {            // 150 x 20 ms = 3 s
+            s16 *out = (s16 *)buf;
+            for (int f = 0; f < 48 * CHUNK_PKTS; f++) {
+                s16 v = (s16)(sin(phase) * 2500.0);   // ~8% of full scale
+                phase += step;
+                if (phase > 6.283185307179586) phase -= 6.283185307179586;
+                out[f * 2] = v;
+                out[f * 2 + 1] = v;
+            }
+            u32 xf = 0;
+            Result r = usbHsEpPostBuffer(&ep, buf, CHUNK_BYTES, c, &xf);
+            if (R_FAILED(r)) { if (errs++ < 3) OUT("post %d: rc=0x%x\n", c, r); }
+            else { if (ok++ < 2) OUT("post %d: ok, %u bytes\n", c, xf); }
+        }
+        OUT("tone done: ok=%d errs=%d\n", ok, errs);
+        usbHsEpClose(&ep);
+    }
+
+    // back to alt 0 (no bandwidth)
+    usbHsIfCtrlXfer(&s, 0x01, 0x0B, 0, STREAM_IF, 0, buf, &got);
+    free(buf);
+    usbHsIfClose(&s);
+    if (g_log) fflush(g_log);
+}
+
 int main(void) {
     consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
@@ -148,7 +228,7 @@ int main(void) {
 
     Result rc = usbHsInitialize();
     OUT("usbHsInitialize: 0x%x\n", rc);
-    OUT("A = rescan, X = dump config, + = exit\n");
+    OUT("A = rescan, X = dump config, Y = 3s test tone (low vol), + = exit\n");
     if (R_SUCCEEDED(rc)) scan();
 
     while (appletMainLoop()) {
@@ -158,6 +238,7 @@ int main(void) {
         if (R_SUCCEEDED(rc)) {
             if (down & HidNpadButton_A) scan();
             if (down & HidNpadButton_X) dump_config();
+            if (down & HidNpadButton_Y) tone_test();
         }
         consoleUpdate(NULL);
     }
