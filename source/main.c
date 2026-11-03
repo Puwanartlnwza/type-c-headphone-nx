@@ -148,6 +148,7 @@ static void dump_config(void) {
 #define CLOCK_ID    9
 #define CHUNK_PKTS  20     // 20 ms per post
 #define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
+#define NSLOT       16     // URBs kept in flight (1 packet = 1 ms each)
 
 static void fill_sine(s16 *out, int frames, double *phase) {
     const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
@@ -214,36 +215,58 @@ static void tone_test(void) {
     UsbHsClientEpSession ep;
     u32 sizes[3] = { CHUNK_BYTES, PKT_BYTES, 0x1000 };
     for (int k = 0; k < 3; k++) {
-        rc = usbHsIfOpenUsbEp(&s, &ep, 1, sizes[k], &desc);
+        rc = usbHsIfOpenUsbEp(&s, &ep, NSLOT, sizes[k], &desc);
         OUT("open ep 0x%02x (maxXfer %u): rc=0x%x\n", STREAM_EP, sizes[k], rc);
         if (R_SUCCEEDED(rc)) break;
     }
 
     if (R_SUCCEEDED(rc)) {
-        double phase = 0.0;
-        // find a transfer size the endpoint accepts (single URB = ideally 1 packet)
-        u32 try_sizes[3] = { CHUNK_BYTES, PKT_BYTES * 4, PKT_BYTES };
-        u32 use = 0;
-        for (int k = 0; k < 3 && !use; k++) {
-            u32 xf = 0;
-            fill_sine((s16 *)buf, try_sizes[k] / 4, &phase);
-            Result r = usbHsEpPostBuffer(&ep, buf, try_sizes[k], &xf);
-            OUT("post test size %u: rc=0x%x xfer=%u\n", try_sizes[k], r, xf);
-            if (R_SUCCEEDED(r)) use = try_sizes[k];
-        }
-        if (use) {
-            int total = (48000 * 3) / (use / 4);      // ~3 seconds
-            int errs = 0, ok = 0;
-            for (int c = 0; c < total; c++) {
-                u32 xf = 0;
-                fill_sine((s16 *)buf, use / 4, &phase);
-                Result r = usbHsEpPostBuffer(&ep, buf, use, &xf);
-                if (R_FAILED(r)) { if (errs++ < 3) OUT("post %d: rc=0x%x\n", c, r); }
-                else ok++;
+        // Keep NSLOT single-packet URBs queued; each slot is its own page-aligned buffer.
+        u8 *slots = aligned_alloc(0x1000, (size_t)NSLOT * 0x1000);
+        if (!slots) { OUT("slot alloc failed\n"); }
+        else {
+            double phase = 0.0;
+            u32 ids[NSLOT];
+            const int total = 3000;                 // 3000 packets = ~3 s
+            int posted = 0, done = 0, errs = 0, shown = 0;
+            Event *ev = usbHsEpGetXferEvent(&ep);
+
+            for (int i = 0; i < NSLOT && posted < total; i++) {
+                fill_sine((s16 *)(slots + i * 0x1000), PKT_BYTES / 4, &phase);
+                Result r = usbHsEpPostBufferAsync(&ep, slots + i * 0x1000, PKT_BYTES, 0, &ids[i]);
+                if (R_FAILED(r)) { OUT("prime post %d: rc=0x%x\n", i, r); errs++; break; }
+                posted++;
             }
-            OUT("tone done (size %u): ok=%d errs=%d\n", use, ok, errs);
-        } else {
-            OUT("no transfer size accepted\n");
+            OUT("primed %d URBs\n", posted);
+
+            while (done < total && !errs) {
+                Result w = eventWait(ev, 300000000ULL);   // 300 ms
+                if (R_FAILED(w)) { OUT("event wait: rc=0x%x (posted %d, done %d)\n", w, posted, done); errs++; break; }
+                eventClear(ev);
+
+                UsbHsXferReport reps[NSLOT];
+                u32 n = 0;
+                Result r = usbHsEpGetXferReport(&ep, reps, NSLOT, &n);
+                if (R_FAILED(r)) { OUT("get report: rc=0x%x\n", r); errs++; break; }
+
+                for (u32 k = 0; k < n; k++) {
+                    if (shown < 4) { OUT("report: res=0x%x size=%u\n", reps[k].res, reps[k].transferredSize); shown++; }
+                    if (R_FAILED(reps[k].res)) { OUT("xfer failed: rc=0x%x\n", reps[k].res); errs++; }
+                    done++;
+                    if (posted < total) {
+                        for (int sl = 0; sl < NSLOT; sl++) {
+                            if (ids[sl] != reps[k].xferId) continue;
+                            fill_sine((s16 *)(slots + sl * 0x1000), PKT_BYTES / 4, &phase);
+                            Result pr = usbHsEpPostBufferAsync(&ep, slots + sl * 0x1000, PKT_BYTES, 0, &ids[sl]);
+                            if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
+                            else posted++;
+                            break;
+                        }
+                    }
+                }
+            }
+            OUT("tone done: posted=%d done=%d errs=%d\n", posted, done, errs);
+            free(slots);
         }
         usbHsEpClose(&ep);
     }
