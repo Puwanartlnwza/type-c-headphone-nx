@@ -29,12 +29,12 @@ static void scan(void) {
             d->bInterfaceClass, d->bInterfaceSubClass, d->bInterfaceProtocol);
 
         for (int j = 0; j < 15; j++) {
-            struct usb_endpoint_descriptor *e = &ifs[i].inf.output_endpoint_desc[j];
+            struct usb_endpoint_descriptor *e = &ifs[i].inf.output_endpoint_descs[j];
             if (e->bLength) OUT("    OUT ep 0x%02x attr 0x%02x maxpkt %u interval %u\n",
                                 e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
         }
         for (int j = 0; j < 15; j++) {
-            struct usb_endpoint_descriptor *e = &ifs[i].inf.input_endpoint_desc[j];
+            struct usb_endpoint_descriptor *e = &ifs[i].inf.input_endpoint_descs[j];
             if (e->bLength) OUT("    IN  ep 0x%02x attr 0x%02x maxpkt %u interval %u\n",
                                 e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
         }
