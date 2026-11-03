@@ -164,7 +164,16 @@ static void fill_sine(s16 *out, int frames, double *phase) {
     }
 }
 
-static void tone_test(void) {
+// variant bit0: start frame -> unk1, bit1: map buffers with CreateSmmuSpace, bit2: start frame -> unk2
+static Result post_batch(UsbHsClientEpSession *ep, void *buf, u32 *urbs, int variant, u32 frame0, int seq, u32 *xferId) {
+    u32 f = frame0 + 8 + (u32)seq * BATCH_PKTS;   // start a few ms in the future, then back-to-back
+    u32 u1 = (variant & 1) ? f : 0;
+    u32 u2 = (variant & 4) ? f : 0;
+    return usbHsEpBatchBufferAsync(ep, buf, urbs, BATCH_PKTS, 0, u1, u2, xferId);
+}
+
+static void tone_test(int variant) {
+    OUT("\n=== tone test, variant %d ===\n", variant);
     s32 idx = -1;
     for (s32 i = 0; i < g_total && i < 16; i++) {
         struct usb_interface_descriptor *d = &g_ifs[i].inf.interface_desc;
@@ -233,13 +242,23 @@ static void tone_test(void) {
             u32 ids[NBUF];
             for (int i = 0; i < BATCH_PKTS; i++) urbs[i] = PKT_BYTES;
 
+            if (variant & 2) {
+                Result sr = usbHsEpCreateSmmuSpace(&ep, bufs, NBUF * BUF_STRIDE);
+                OUT("CreateSmmuSpace: rc=0x%x\n", sr);
+            }
+            u32 frame0 = 0;
+            if (variant & 5) {
+                Result fr = usbHsIfGetCurrentFrame(&s, &frame0);
+                OUT("current frame: rc=0x%x value=%u\n", fr, frame0);
+            }
+
             const int total = 188;                  // 188 x 16 ms = ~3 s
             int posted = 0, done = 0, errs = 0, shown = 0;
             Event *ev = usbHsEpGetXferEvent(&ep);
 
             for (int i = 0; i < NBUF && posted < total; i++) {
                 fill_sine((s16 *)(bufs + i * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                Result r = usbHsEpBatchBufferAsync(&ep, bufs + i * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[i]);
+                Result r = post_batch(&ep, bufs + i * BUF_STRIDE, urbs, variant, frame0, posted, &ids[i]);
                 OUT("batch %d post: rc=0x%x\n", i, r);
                 if (R_FAILED(r)) { errs++; break; }
                 posted++;
@@ -271,7 +290,7 @@ static void tone_test(void) {
                                 cnt[sl] = 0;
                                 if (posted < total) {
                                     fill_sine((s16 *)(bufs + sl * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                                    Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
+                                    Result pr = post_batch(&ep, bufs + sl * BUF_STRIDE, urbs, variant, frame0, posted, &ids[sl]);
                                     if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
                                     else posted++;
                                 }
@@ -287,9 +306,12 @@ static void tone_test(void) {
         usbHsEpClose(&ep);
     }
 
-    // back to alt 0 (no bandwidth)
+    // back to alt 0, then reset the device (same effect as unplug/replug)
     usbHsIfSetInterface(&s, &info, 0);
     free(buf);
+    Result rr = usbHsIfResetDevice(&s);
+    OUT("reset device: rc=0x%x -> wait ~3 s, then press A to rescan\n", rr);
+    g_total = 0;
     usbHsIfClose(&s);
     if (g_log) fflush(g_log);
 }
@@ -304,7 +326,7 @@ int main(void) {
 
     Result rc = usbHsInitialize();
     OUT("usbHsInitialize: 0x%x\n", rc);
-    OUT("A = rescan, X = dump config, Y = 3s test tone (low vol), + = exit\n");
+    OUT("A = rescan, X = dump config, Y/L/R/ZR = test tone variants (low vol), + = exit\n");
     if (R_SUCCEEDED(rc)) scan();
 
     while (appletMainLoop()) {
@@ -314,7 +336,10 @@ int main(void) {
         if (R_SUCCEEDED(rc)) {
             if (down & HidNpadButton_A) scan();
             if (down & HidNpadButton_X) dump_config();
-            if (down & HidNpadButton_Y) tone_test();
+            if (down & HidNpadButton_Y)  tone_test(0);   // baseline
+            if (down & HidNpadButton_L)  tone_test(1);   // start frame in unk1
+            if (down & HidNpadButton_R)  tone_test(4);   // start frame in unk2
+            if (down & HidNpadButton_ZR) tone_test(2);   // buffers mapped with SmmuSpace
         }
         consoleUpdate(NULL);
     }
