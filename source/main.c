@@ -148,7 +148,9 @@ static void dump_config(void) {
 #define CLOCK_ID    9
 #define CHUNK_PKTS  20     // 20 ms per post
 #define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
-#define NSLOT       16     // URBs kept in flight (1 packet = 1 ms each)
+#define BATCH_PKTS  64     // packets per batch: 64 x 192 = 12288 = 3 pages (0x1000-aligned)
+#define BATCH_BYTES (PKT_BYTES * BATCH_PKTS)
+#define NBUF        4      // batches kept in flight (64 ms each)
 
 static void fill_sine(s16 *out, int frames, double *phase) {
     const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
@@ -213,51 +215,54 @@ static void tone_test(void) {
     }
 
     UsbHsClientEpSession ep;
-    u32 sizes[3] = { CHUNK_BYTES, PKT_BYTES, 0x1000 };
+    u16 urb_try[3] = { 128, 64, 16 };
     for (int k = 0; k < 3; k++) {
-        rc = usbHsIfOpenUsbEp(&s, &ep, NSLOT, sizes[k], &desc);
-        OUT("open ep 0x%02x (maxXfer %u): rc=0x%x\n", STREAM_EP, sizes[k], rc);
+        rc = usbHsIfOpenUsbEp(&s, &ep, urb_try[k], BATCH_BYTES, &desc);
+        OUT("open ep 0x%02x (maxUrb %u, maxXfer %u): rc=0x%x\n", STREAM_EP, urb_try[k], BATCH_BYTES, rc);
         if (R_SUCCEEDED(rc)) break;
     }
 
     if (R_SUCCEEDED(rc)) {
-        // Keep NSLOT single-packet URBs queued; each slot is its own page-aligned buffer.
-        u8 *slots = aligned_alloc(0x1000, (size_t)NSLOT * 0x1000);
-        if (!slots) { OUT("slot alloc failed\n"); }
+        // Batches of 64 one-packet URBs; buffer address and size are 0x1000-aligned.
+        u8 *bufs = aligned_alloc(0x1000, (size_t)NBUF * BATCH_BYTES);
+        if (!bufs) { OUT("batch alloc failed\n"); }
         else {
             double phase = 0.0;
-            u32 ids[NSLOT];
-            const int total = 3000;                 // 3000 packets = ~3 s
+            u32 urbs[BATCH_PKTS];
+            u32 ids[NBUF];
+            for (int i = 0; i < BATCH_PKTS; i++) urbs[i] = PKT_BYTES;
+
+            const int total = 47;                   // 47 x 64 ms = ~3 s
             int posted = 0, done = 0, errs = 0, shown = 0;
             Event *ev = usbHsEpGetXferEvent(&ep);
 
-            for (int i = 0; i < NSLOT && posted < total; i++) {
-                fill_sine((s16 *)(slots + i * 0x1000), PKT_BYTES / 4, &phase);
-                Result r = usbHsEpPostBufferAsync(&ep, slots + i * 0x1000, PKT_BYTES, 0, &ids[i]);
-                if (R_FAILED(r)) { OUT("prime post %d: rc=0x%x\n", i, r); errs++; break; }
+            for (int i = 0; i < NBUF && posted < total; i++) {
+                fill_sine((s16 *)(bufs + i * BATCH_BYTES), BATCH_PKTS * PKT_BYTES / 4, &phase);
+                Result r = usbHsEpBatchBufferAsync(&ep, bufs + i * BATCH_BYTES, urbs, BATCH_PKTS, 0, 0, 0, &ids[i]);
+                OUT("batch %d post: rc=0x%x\n", i, r);
+                if (R_FAILED(r)) { errs++; break; }
                 posted++;
             }
-            OUT("primed %d URBs\n", posted);
 
-            while (done < total && !errs) {
-                Result w = eventWait(ev, 300000000ULL);   // 300 ms
+            while (done < posted && !errs) {
+                Result w = eventWait(ev, 500000000ULL);   // 500 ms
                 if (R_FAILED(w)) { OUT("event wait: rc=0x%x (posted %d, done %d)\n", w, posted, done); errs++; break; }
                 eventClear(ev);
 
-                UsbHsXferReport reps[NSLOT];
+                UsbHsXferReport reps[NBUF * 2];
                 u32 n = 0;
-                Result r = usbHsEpGetXferReport(&ep, reps, NSLOT, &n);
+                Result r = usbHsEpGetXferReport(&ep, reps, NBUF * 2, &n);
                 if (R_FAILED(r)) { OUT("get report: rc=0x%x\n", r); errs++; break; }
 
                 for (u32 k = 0; k < n; k++) {
-                    if (shown < 4) { OUT("report: res=0x%x size=%u\n", reps[k].res, reps[k].transferredSize); shown++; }
+                    if (shown < 6) { OUT("report: res=0x%x size=%u\n", reps[k].res, reps[k].transferredSize); shown++; }
                     if (R_FAILED(reps[k].res)) { OUT("xfer failed: rc=0x%x\n", reps[k].res); errs++; }
                     done++;
                     if (posted < total) {
-                        for (int sl = 0; sl < NSLOT; sl++) {
+                        for (int sl = 0; sl < NBUF; sl++) {
                             if (ids[sl] != reps[k].xferId) continue;
-                            fill_sine((s16 *)(slots + sl * 0x1000), PKT_BYTES / 4, &phase);
-                            Result pr = usbHsEpPostBufferAsync(&ep, slots + sl * 0x1000, PKT_BYTES, 0, &ids[sl]);
+                            fill_sine((s16 *)(bufs + sl * BATCH_BYTES), BATCH_PKTS * PKT_BYTES / 4, &phase);
+                            Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BATCH_BYTES, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
                             if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
                             else posted++;
                             break;
@@ -265,8 +270,8 @@ static void tone_test(void) {
                     }
                 }
             }
-            OUT("tone done: posted=%d done=%d errs=%d\n", posted, done, errs);
-            free(slots);
+            OUT("tone done: batches posted=%d done=%d errs=%d\n", posted, done, errs);
+            free(bufs);
         }
         usbHsEpClose(&ep);
     }
