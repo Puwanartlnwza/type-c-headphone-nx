@@ -22,19 +22,19 @@ static void scan(void) {
     if (R_FAILED(rc)) return;
 
     for (s32 i = 0; i < total && i < 16; i++) {
-        struct usb_interface_descriptor *d = &ifs[i].inf.inf.interface_desc;
+        struct usb_interface_descriptor *d = &ifs[i].inf.interface_desc;
         OUT("[%d] VID %04x PID %04x | if#%d alt%d class %02x sub %02x proto %02x\n",
             i, ifs[i].device_desc.idVendor, ifs[i].device_desc.idProduct,
             d->bInterfaceNumber, d->bAlternateSetting,
             d->bInterfaceClass, d->bInterfaceSubClass, d->bInterfaceProtocol);
 
         for (int j = 0; j < 15; j++) {
-            struct usb_endpoint_descriptor *e = &ifs[i].inf.inf.output_endpoint_desc[j];
+            struct usb_endpoint_descriptor *e = &ifs[i].inf.output_endpoint_desc[j];
             if (e->bLength) OUT("    OUT ep 0x%02x attr 0x%02x maxpkt %u interval %u\n",
                                 e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
         }
         for (int j = 0; j < 15; j++) {
-            struct usb_endpoint_descriptor *e = &ifs[i].inf.inf.input_endpoint_desc[j];
+            struct usb_endpoint_descriptor *e = &ifs[i].inf.input_endpoint_desc[j];
             if (e->bLength) OUT("    IN  ep 0x%02x attr 0x%02x maxpkt %u interval %u\n",
                                 e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
         }
