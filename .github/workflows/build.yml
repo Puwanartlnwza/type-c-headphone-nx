@@ -1,0 +1,15 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64
+    steps:
+      - uses: actions/checkout@v4
+      - run: make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usbaudio_probe
+          path: usbaudio_probe.nro
