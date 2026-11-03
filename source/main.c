@@ -245,33 +245,43 @@ static void tone_test(void) {
                 posted++;
             }
 
-            while (done < posted && !errs) {
+            int cnt[NBUF] = { 0 };
+            for (int i = 0; i < posted; i++) OUT("  batch %d xferId=%u\n", i, ids[i]);
+
+            // reports arrive per URB; a batch is finished after BATCH_PKTS of them
+            while (done < posted * BATCH_PKTS && !errs) {
                 Result w = eventWait(ev, 500000000ULL);   // 500 ms
-                if (R_FAILED(w)) { OUT("event wait: rc=0x%x (posted %d, done %d)\n", w, posted, done); errs++; break; }
+                if (R_FAILED(w)) { OUT("event wait: rc=0x%x (posted %d, urbs done %d)\n", w, posted, done); errs++; break; }
                 eventClear(ev);
 
-                UsbHsXferReport reps[NBUF * 2];
-                u32 n = 0;
-                Result r = usbHsEpGetXferReport(&ep, reps, NBUF * 2, &n);
-                if (R_FAILED(r)) { OUT("get report: rc=0x%x\n", r); errs++; break; }
+                for (;;) {
+                    UsbHsXferReport reps[NBUF * BATCH_PKTS];
+                    u32 n = 0;
+                    Result r = usbHsEpGetXferReport(&ep, reps, NBUF * BATCH_PKTS, &n);
+                    if (R_FAILED(r)) { OUT("get report: rc=0x%x\n", r); errs++; break; }
+                    if (n == 0) break;
 
-                for (u32 k = 0; k < n; k++) {
-                    if (shown < 6) { OUT("report: res=0x%x size=%u\n", reps[k].res, reps[k].transferredSize); shown++; }
-                    if (R_FAILED(reps[k].res)) { OUT("xfer failed: rc=0x%x\n", reps[k].res); errs++; }
-                    done++;
-                    if (posted < total) {
+                    for (u32 k = 0; k < n; k++) {
+                        if (shown < 6) { OUT("report: id=%u res=0x%x size=%u\n", reps[k].xferId, reps[k].res, reps[k].transferredSize); shown++; }
+                        if (R_FAILED(reps[k].res)) { if (errs++ < 3) OUT("xfer failed: rc=0x%x\n", reps[k].res); }
+                        done++;
                         for (int sl = 0; sl < NBUF; sl++) {
                             if (ids[sl] != reps[k].xferId) continue;
-                            fill_sine((s16 *)(bufs + sl * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                            Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
-                            if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
-                            else posted++;
+                            if (++cnt[sl] == BATCH_PKTS) {
+                                cnt[sl] = 0;
+                                if (posted < total) {
+                                    fill_sine((s16 *)(bufs + sl * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
+                                    Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
+                                    if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
+                                    else posted++;
+                                }
+                            }
                             break;
                         }
                     }
                 }
             }
-            OUT("tone done: batches posted=%d done=%d errs=%d\n", posted, done, errs);
+            OUT("tone done: batches posted=%d urbs done=%d errs=%d\n", posted, done, errs);
             free(bufs);
         }
         usbHsEpClose(&ep);
