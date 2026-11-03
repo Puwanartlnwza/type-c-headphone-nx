@@ -149,6 +149,17 @@ static void dump_config(void) {
 #define CHUNK_PKTS  20     // 20 ms per post
 #define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
 
+static void fill_sine(s16 *out, int frames, double *phase) {
+    const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
+    for (int f = 0; f < frames; f++) {
+        s16 v = (s16)(sin(*phase) * 2500.0);       // ~8% of full scale
+        *phase += step;
+        if (*phase > 6.283185307179586) *phase -= 6.283185307179586;
+        out[f * 2] = v;
+        out[f * 2 + 1] = v;
+    }
+}
+
 static void tone_test(void) {
     s32 idx = -1;
     for (s32 i = 0; i < g_total && i < 16; i++) {
@@ -209,23 +220,31 @@ static void tone_test(void) {
     }
 
     if (R_SUCCEEDED(rc)) {
-        double phase = 0.0, step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
-        int errs = 0, ok = 0;
-        for (int c = 0; c < 150; c++) {            // 150 x 20 ms = 3 s
-            s16 *out = (s16 *)buf;
-            for (int f = 0; f < 48 * CHUNK_PKTS; f++) {
-                s16 v = (s16)(sin(phase) * 2500.0);   // ~8% of full scale
-                phase += step;
-                if (phase > 6.283185307179586) phase -= 6.283185307179586;
-                out[f * 2] = v;
-                out[f * 2 + 1] = v;
-            }
+        double phase = 0.0;
+        // find a transfer size the endpoint accepts (single URB = ideally 1 packet)
+        u32 try_sizes[3] = { CHUNK_BYTES, PKT_BYTES * 4, PKT_BYTES };
+        u32 use = 0;
+        for (int k = 0; k < 3 && !use; k++) {
             u32 xf = 0;
-            Result r = usbHsEpPostBuffer(&ep, buf, CHUNK_BYTES, &xf);
-            if (R_FAILED(r)) { if (errs++ < 3) OUT("post %d: rc=0x%x\n", c, r); }
-            else { if (ok++ < 2) OUT("post %d: ok, %u bytes\n", c, xf); }
+            fill_sine((s16 *)buf, try_sizes[k] / 4, &phase);
+            Result r = usbHsEpPostBuffer(&ep, buf, try_sizes[k], &xf);
+            OUT("post test size %u: rc=0x%x xfer=%u\n", try_sizes[k], r, xf);
+            if (R_SUCCEEDED(r)) use = try_sizes[k];
         }
-        OUT("tone done: ok=%d errs=%d\n", ok, errs);
+        if (use) {
+            int total = (48000 * 3) / (use / 4);      // ~3 seconds
+            int errs = 0, ok = 0;
+            for (int c = 0; c < total; c++) {
+                u32 xf = 0;
+                fill_sine((s16 *)buf, use / 4, &phase);
+                Result r = usbHsEpPostBuffer(&ep, buf, use, &xf);
+                if (R_FAILED(r)) { if (errs++ < 3) OUT("post %d: rc=0x%x\n", c, r); }
+                else ok++;
+            }
+            OUT("tone done (size %u): ok=%d errs=%d\n", use, ok, errs);
+        } else {
+            OUT("no transfer size accepted\n");
+        }
         usbHsEpClose(&ep);
     }
 
