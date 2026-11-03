@@ -148,9 +148,10 @@ static void dump_config(void) {
 #define CLOCK_ID    9
 #define CHUNK_PKTS  20     // 20 ms per post
 #define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
-#define BATCH_PKTS  64     // packets per batch: 64 x 192 = 12288 = 3 pages (0x1000-aligned)
+#define BATCH_PKTS  16     // packets per batch (usb:hs rejected 64 URBs per batch)
 #define BATCH_BYTES (PKT_BYTES * BATCH_PKTS)
-#define NBUF        4      // batches kept in flight (64 ms each)
+#define NBUF        4      // batches kept in flight (16 ms each)
+#define BUF_STRIDE  0x1000 // every batch buffer starts on its own page
 
 static void fill_sine(s16 *out, int frames, double *phase) {
     const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
@@ -215,7 +216,7 @@ static void tone_test(void) {
     }
 
     UsbHsClientEpSession ep;
-    u16 urb_try[3] = { 128, 64, 16 };
+    u16 urb_try[3] = { 32, 24, 16 };
     for (int k = 0; k < 3; k++) {
         rc = usbHsIfOpenUsbEp(&s, &ep, urb_try[k], BATCH_BYTES, &desc);
         OUT("open ep 0x%02x (maxUrb %u, maxXfer %u): rc=0x%x\n", STREAM_EP, urb_try[k], BATCH_BYTES, rc);
@@ -223,8 +224,8 @@ static void tone_test(void) {
     }
 
     if (R_SUCCEEDED(rc)) {
-        // Batches of 64 one-packet URBs; buffer address and size are 0x1000-aligned.
-        u8 *bufs = aligned_alloc(0x1000, (size_t)NBUF * BATCH_BYTES);
+        // Batches of 16 one-packet URBs; each batch buffer starts on a 0x1000 boundary.
+        u8 *bufs = aligned_alloc(0x1000, (size_t)NBUF * BUF_STRIDE);
         if (!bufs) { OUT("batch alloc failed\n"); }
         else {
             double phase = 0.0;
@@ -232,13 +233,13 @@ static void tone_test(void) {
             u32 ids[NBUF];
             for (int i = 0; i < BATCH_PKTS; i++) urbs[i] = PKT_BYTES;
 
-            const int total = 47;                   // 47 x 64 ms = ~3 s
+            const int total = 188;                  // 188 x 16 ms = ~3 s
             int posted = 0, done = 0, errs = 0, shown = 0;
             Event *ev = usbHsEpGetXferEvent(&ep);
 
             for (int i = 0; i < NBUF && posted < total; i++) {
-                fill_sine((s16 *)(bufs + i * BATCH_BYTES), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                Result r = usbHsEpBatchBufferAsync(&ep, bufs + i * BATCH_BYTES, urbs, BATCH_PKTS, 0, 0, 0, &ids[i]);
+                fill_sine((s16 *)(bufs + i * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
+                Result r = usbHsEpBatchBufferAsync(&ep, bufs + i * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[i]);
                 OUT("batch %d post: rc=0x%x\n", i, r);
                 if (R_FAILED(r)) { errs++; break; }
                 posted++;
@@ -261,8 +262,8 @@ static void tone_test(void) {
                     if (posted < total) {
                         for (int sl = 0; sl < NBUF; sl++) {
                             if (ids[sl] != reps[k].xferId) continue;
-                            fill_sine((s16 *)(bufs + sl * BATCH_BYTES), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                            Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BATCH_BYTES, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
+                            fill_sine((s16 *)(bufs + sl * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
+                            Result pr = usbHsEpBatchBufferAsync(&ep, bufs + sl * BUF_STRIDE, urbs, BATCH_PKTS, 0, 0, 0, &ids[sl]);
                             if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
                             else posted++;
                             break;
