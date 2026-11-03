@@ -203,7 +203,7 @@ static void tone_test(void) {
                 out[f * 2 + 1] = v;
             }
             u32 xf = 0;
-            Result r = usbHsEpPostBuffer(&ep, buf, CHUNK_BYTES, c, &xf);
+            Result r = usbHsEpPostBuffer(&ep, buf, CHUNK_BYTES, &xf);
             if (R_FAILED(r)) { if (errs++ < 3) OUT("post %d: rc=0x%x\n", c, r); }
             else { if (ok++ < 2) OUT("post %d: ok, %u bytes\n", c, xf); }
         }
