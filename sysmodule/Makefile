@@ -25,11 +25,12 @@ $(TARGET).npdm: sysmodule.json
 	npdmtool $< $@
 
 dist: $(TARGET).nso $(TARGET).npdm
-	rm -rf out
-	mkdir -p out/atmosphere/contents/$(TID)/exefs out/atmosphere/contents/$(TID)/flags
-	cp $(TARGET).nso out/atmosphere/contents/$(TID)/exefs/main
-	cp $(TARGET).npdm out/atmosphere/contents/$(TID)/exefs/main.npdm
+	rm -rf out stage
+	mkdir -p stage out/atmosphere/contents/$(TID)/flags
+	cp $(TARGET).nso stage/main
+	cp $(TARGET).npdm stage/main.npdm
+	build_pfs0 stage out/atmosphere/contents/$(TID)/exefs.nsp
 	touch out/atmosphere/contents/$(TID)/flags/boot2.flag
 
 clean:
-	rm -rf out $(TARGET).elf $(TARGET).nso $(TARGET).npdm
+	rm -rf out stage $(TARGET).elf $(TARGET).nso $(TARGET).npdm
