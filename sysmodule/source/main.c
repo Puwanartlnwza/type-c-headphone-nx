@@ -179,7 +179,7 @@ static int run_session(void) {
                     const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
                     ring_push(&g_ring, src, size);
 
-                    if (stats < 300 && (captured++ % 50) == 1) {
+                    if (stats < 120 && (captured++ % 250) == 1) {
                         s16 peak = 0;
                         const s16 *p = (const s16 *)src;
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
@@ -199,14 +199,20 @@ static int run_session(void) {
             break;
         }
 
-        if (ms_now() - last_poll >= 500) {
+        if (ms_now() - last_poll >= 2000) {
             last_poll = ms_now();
             poll_config();
             if (!g_enabled) { LOG("disabled from overlay, ending session"); break; }
         }
 
         rc = usbout_pump(&g_usb, &g_ring, g_gain);
-        if (R_FAILED(rc)) { LOG("usb pump error: 0x%x", rc); reset_dev = true; break; }
+        if (R_FAILED(rc)) {
+            LOG("usb pump error: 0x%x (batches=%u underruns=%u), restarting the USB stream", rc, g_usb.batches, g_usb.underruns);
+            usbout_close(&g_usb, false);
+            rc = usbout_open(&g_usb, &g_ring, g_gain);
+            if (R_FAILED(rc)) { LOG("stream restart failed: 0x%x", rc); reset_dev = true; break; }
+            LOG("stream restarted, frame0=%u", g_usb.frame0);
+        }
     }
 
     audrec_stop(&g_rec);

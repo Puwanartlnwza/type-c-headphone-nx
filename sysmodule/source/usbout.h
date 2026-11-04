@@ -11,7 +11,7 @@
 #define UO_CLOCK   9
 #define UO_PKT     192            // bytes per 1 ms packet (48 frames x 2 ch x 2 bytes)
 #define UO_BATCH   16             // URBs (packets) per batch; usb:hs rejected 64
-#define UO_NBUF    4              // batches in flight
+#define UO_NBUF    6              // batches in flight (96 ms)
 #define UO_STRIDE  0x1000         // every batch buffer starts on its own page
 
 typedef struct {

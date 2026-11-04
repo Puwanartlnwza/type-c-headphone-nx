@@ -1,0 +1,109 @@
+usbaudio sysmodule v0.1 starting (gain=6%)
+usb:hs ready
+usb open ok, frame0=1416 gain=6%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=3
+rec: size=4096 peak=0 ring=5120 underruns=6 batches=136
+rec: size=4096 peak=0 ring=6144 underruns=6 batches=269
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=403
+rec: size=4096 peak=0 ring=5120 underruns=6 batches=536
+rec: size=4096 peak=0 ring=6144 underruns=6 batches=669
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=803
+usb pump error: 0xd28c
+session ended (underruns=9 batches=844)
+usb open ok, frame0=1701 gain=67%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=3
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=136
+rec: size=4096 peak=0 ring=7168 underruns=7 batches=269
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=403
+rec: size=4096 peak=0 ring=7168 underruns=8 batches=536
+rec: size=4096 peak=0 ring=8192 underruns=11 batches=669
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=803
+rec: size=4096 peak=0 ring=7168 underruns=11 batches=936
+rec: size=4096 peak=0 ring=8192 underruns=12 batches=1069
+rec: size=4096 peak=0 ring=6144 underruns=13 batches=1203
+rec: size=4096 peak=0 ring=7168 underruns=14 batches=1336
+rec: size=4096 peak=0 ring=8192 underruns=15 batches=1469
+usb pump error: 0xd28c
+session ended (underruns=17 batches=1473)
+usb open ok, frame0=1928 gain=22%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=3
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=136
+rec: size=4096 peak=0 ring=4096 underruns=7 batches=270
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=403
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=536
+rec: size=4096 peak=0 ring=4096 underruns=7 batches=670
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=803
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=936
+rec: size=4096 peak=0 ring=7168 underruns=7 batches=1069
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=1203
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=1336
+rec: size=4096 peak=0 ring=4096 underruns=7 batches=1470
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=1603
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=1736
+rec: size=4096 peak=0 ring=7168 underruns=7 batches=1869
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=2003
+rec: size=4096 peak=0 ring=6144 underruns=7 batches=2136
+rec: size=4096 peak=0 ring=7168 underruns=7 batches=2269
+rec: size=4096 peak=0 ring=5120 underruns=7 batches=2403
+rec: size=4096 peak=0 ring=7168 underruns=8 batches=2536
+usb pump error: 0xd28c
+session ended (underruns=10 batches=4709)
+usb open ok, frame0=459 gain=26%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=3
+rec: size=4096 peak=0 ring=7168 underruns=9 batches=136
+rec: size=4096 peak=0 ring=5120 underruns=11 batches=270
+usb pump error: 0xd28c
+session ended (underruns=14 batches=293)
+usb open ok, frame0=145 gain=26%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=0 ring=4096 underruns=6 batches=3
+rec: size=4096 peak=0 ring=7168 underruns=8 batches=136
+rec: size=4096 peak=0 ring=5120 underruns=9 batches=270
+rec: size=4096 peak=0 ring=6144 underruns=9 batches=403
+rec: size=4096 peak=0 ring=7168 underruns=9 batches=536
+rec: size=4096 peak=0 ring=5120 underruns=9 batches=670
+rec: size=4096 peak=0 ring=6144 underruns=9 batches=803
+rec: size=4096 peak=0 ring=7168 underruns=9 batches=936
+rec: size=4096 peak=343 ring=8192 underruns=9 batches=1069
+rec: size=4096 peak=0 ring=6144 underruns=9 batches=1203
+rec: size=4096 peak=6023 ring=7168 underruns=10 batches=1336
+rec: size=4096 peak=1368 ring=5120 underruns=10 batches=1470
+rec: size=4096 peak=6909 ring=6144 underruns=11 batches=1603
+rec: size=4096 peak=9551 ring=7168 underruns=11 batches=1736
+rec: size=4096 peak=887 ring=8192 underruns=11 batches=1869
+usb pump error: 0xd28c
+session ended (underruns=14 batches=1925)
+usb open ok, frame0=1255 gain=7%
+audrec open ok: rate=48000 ch=2 fmt=2 state=1
+audrec start: 0x0
+rec: size=4096 peak=1459 ring=4096 underruns=5 batches=2
+rec: size=4096 peak=6036 ring=5120 underruns=7 batches=136
+rec: size=4096 peak=5854 ring=7168 underruns=8 batches=269
+rec: size=4096 peak=12133 ring=5120 underruns=8 batches=403
+rec: size=4096 peak=13697 ring=6144 underruns=8 batches=536
+rec: size=4096 peak=0 ring=7168 underruns=9 batches=669
+rec: size=4096 peak=0 ring=8192 underruns=10 batches=802
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=936
+rec: size=4096 peak=0 ring=7168 underruns=11 batches=1069
+rec: size=4096 peak=0 ring=8192 underruns=11 batches=1202
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=1336
+rec: size=4096 peak=0 ring=7168 underruns=11 batches=1469
+rec: size=4096 peak=0 ring=5120 underruns=11 batches=1603
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=1736
+rec: size=4096 peak=0 ring=7168 underruns=11 batches=1869
+rec: size=4096 peak=0 ring=8192 underruns=11 batches=2002
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=2136
+rec: size=4096 peak=0 ring=7168 underruns=11 batches=2269
+rec: size=4096 peak=0 ring=8192 underruns=11 batches=2402
+rec: size=4096 peak=0 ring=6144 underruns=11 batches=2536
+usb pump error: 0xd28c
+session ended (underruns=14 batches=6879)

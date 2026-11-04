@@ -11,9 +11,12 @@ static void fill_batch(UsbOut *u, int sl, Ring *ring, u32 gain) {
     const u32 want = UO_BATCH * UO_PKT;
     u32 got = ring_pop(ring, dst, want);
     if (got < want) { memset(dst + got, 0, want - got); u->underruns++; }
-    if (gain < 100) {
+    // gain is a 0-100 slider; the real factor is (gain/100)^2 so the low end has fine steps
+    // (20 -> 4 %, about -28 dB; 50 -> 25 %; 100 -> unchanged)
+    s32 mul = (s32)(gain * gain);
+    if (mul < 10000) {
         s16 *p = (s16 *)dst;
-        for (u32 i = 0; i < want / 2; i++) p[i] = (s16)(((s32)p[i] * (s32)gain) / 100);
+        for (u32 i = 0; i < want / 2; i++) p[i] = (s16)(((s32)p[i] * mul) / 10000);
     }
 }
 
