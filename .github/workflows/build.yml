@@ -14,3 +14,5 @@ jobs:
         with:
           name: usbaudio-overlay
           path: out/
+          include-hidden-files: true
+ 
