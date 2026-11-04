@@ -83,6 +83,27 @@ static void load_config(void) {
     fclose(f);
 }
 
+// ---- control files shared with the Tesla overlay ----
+//   enabled : "1" / "0"  (missing = enabled)       status : one word describing what we are doing
+static bool g_enabled = true;
+
+static u64 ms_now(void) { return armTicksToNs(armGetSystemTick()) / 1000000ULL; }
+
+static void poll_config(void) {
+    FILE *f = fopen("sdmc:/config/usbaudio/enabled", "r");
+    if (f) { int c = fgetc(f); g_enabled = (c != '0'); fclose(f); }
+    else g_enabled = true;
+    load_config();                // gain= (live)
+}
+
+static void set_status(const char *st) {
+    static char last[24] = "";
+    if (strncmp(last, st, sizeof(last)) == 0) return;
+    strncpy(last, st, sizeof(last) - 1);
+    FILE *f = fopen("sdmc:/config/usbaudio/status.txt", "w");
+    if (f) { fprintf(f, "%s\n", st); fclose(f); }
+}
+
 // ---- streaming session ----
 #define RECN 4
 static Ring         g_ring;
@@ -127,6 +148,8 @@ static int run_session(void) {
     }
     rc = audrec_start(&g_rec);
     LOG("audrec start: 0x%x", rc);
+    set_status("streaming");
+    u64 last_poll = ms_now();
 
     bool reset_dev = false;
     int timeouts = 0, stats = 0;
@@ -172,6 +195,12 @@ static int run_session(void) {
             break;
         }
 
+        if (ms_now() - last_poll >= 500) {
+            last_poll = ms_now();
+            poll_config();
+            if (!g_enabled) { LOG("disabled from overlay, ending session"); break; }
+        }
+
         rc = usbout_pump(&g_usb, &g_ring, g_gain);
         if (R_FAILED(rc)) { LOG("usb pump error: 0x%x", rc); reset_dev = true; break; }
     }
@@ -201,7 +230,10 @@ int main(void) {
     LOG("usb:hs ready");
 
     for (;;) {
+        poll_config();
+        if (!g_enabled) { set_status("disabled"); svcSleepThread(1000000000ULL); continue; }
         int r = run_session();
+        set_status(r == 0 ? "no-device" : "error");
         svcSleepThread(r == 0 ? 1000000000ULL : 3000000000ULL);
     }
     return 0;

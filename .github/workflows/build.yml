@@ -8,8 +8,9 @@ jobs:
     container: devkitpro/devkita64
     steps:
       - uses: actions/checkout@v4
+      - run: git clone --depth 1 https://github.com/WerWolv/libtesla libtesla
       - run: make
       - uses: actions/upload-artifact@v4
         with:
-          name: usbaudio-sysmodule
+          name: usbaudio-overlay
           path: out/
