@@ -1,32 +1,36 @@
-ifeq ($(strip $(DEVKITPRO)),)
-$(error "DEVKITPRO is not set")
-endif
+name: build
+on:
+  push:
+  workflow_dispatch:
 
-export PATH := $(DEVKITPRO)/devkitA64/bin:$(DEVKITPRO)/tools/bin:$(PATH)
+jobs:
+  sysmodule:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sysmodule
+        run: make
+        working-directory: sysmodule
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usbaudio-sysmodule
+          path: sysmodule/out/
+          include-hidden-files: true
 
-TARGET   := usbaudio
-LIBTESLA ?= libtesla
-ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
-CXXFLAGS := -O2 -Wall -ffunction-sections $(ARCH) -D__SWITCH__ -I$(DEVKITPRO)/libnx/include -I$(LIBTESLA)/include \
-            -std=c++20 -Wno-dangling-else
-LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH)
-LIBS     := -L$(DEVKITPRO)/libnx/lib -lnx -lm
-
-all: dist
-
-$(TARGET)_ovl.elf: source/main.cpp
-	aarch64-none-elf-g++ $(CXXFLAGS) $< $(LDFLAGS) $(LIBS) -o $@
-
-$(TARGET).nacp:
-	nacptool --create "USB Audio" "user" "0.1.0" $@
-
-$(TARGET).ovl: $(TARGET)_ovl.elf $(TARGET).nacp
-	elf2nro $< $@ --nacp=$(TARGET).nacp
-
-dist: $(TARGET).ovl
-	rm -rf out
-	mkdir -p out/switch/.overlays
-	cp $(TARGET).ovl out/switch/.overlays/$(TARGET).ovl
-
-clean:
-	rm -rf out *.elf *.nacp *.ovl
+  overlay:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get libtesla
+        run: git clone --depth 1 https://github.com/WerWolv/libtesla libtesla
+        working-directory: overlay
+      - name: Build overlay
+        run: make
+        working-directory: overlay
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usbaudio-overlay
+          path: overlay/out/
+          include-hidden-files: true
