@@ -34,7 +34,7 @@ static void write_enabled(bool on) {
 }
 
 static int read_gain() {
-    int gain = 40;
+    int gain = 20;
     FILE *f = fopen(CFG_DIR "/config.ini", "r");
     if (!f) return gain;
     char line[64];

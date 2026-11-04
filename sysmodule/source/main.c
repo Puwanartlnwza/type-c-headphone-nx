@@ -59,17 +59,21 @@ void __appExit(void) {
 }
 
 // ---- logging / config ----
-static FILE *g_log;
-static u32 g_gain = 40;           // percent; EarPods are loud
+static const char *g_log_path = NULL;     // set in main(); NULL = logging off
+static u32 g_gain = 20;           // percent; EarPods are loud (change with the overlay slider or config.ini)
 
+// Open/append/close on every line: an always-open file is not committed to the SD until closed,
+// so it would never show up when the card is read on a PC.
 static void LOG(const char *fmt, ...) {
-    if (!g_log) return;
+    if (!g_log_path) return;
+    FILE *f = fopen(g_log_path, "a");
+    if (!f) return;
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(g_log, fmt, ap);
+    vfprintf(f, fmt, ap);
     va_end(ap);
-    fputc('\n', g_log);
-    fflush(g_log);
+    fputc('\n', f);
+    fclose(f);
 }
 
 static void load_config(void) {
@@ -175,11 +179,11 @@ static int run_session(void) {
                     const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
                     ring_push(&g_ring, src, size);
 
-                    if (stats < 20 && (captured++ % 100) == 1) {
+                    if (stats < 300 && (captured++ % 50) == 1) {
                         s16 peak = 0;
                         const s16 *p = (const s16 *)src;
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
-                        LOG("rec: size=%u peak=%d ring=%u underruns=%u batches=%u", size, peak, ring_level(&g_ring), g_usb.underruns, g_usb.batches);
+                        LOG("t=%ums rec: size=%u peak=%d ring=%u underruns=%u batches=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), size, peak, ring_level(&g_ring), g_usb.underruns, g_usb.batches);
                         stats++;
                     }
                     b->size = b->capacity;
@@ -216,10 +220,12 @@ int main(void) {
     stage("main entered");
     mkdir("sdmc:/config", 0777);
     mkdir("sdmc:/config/usbaudio", 0777);
-    g_log = fopen("sdmc:/config/usbaudio/log.txt", "w");
-    if (!g_log) {
+    FILE *t = fopen("sdmc:/config/usbaudio/log.txt", "w");
+    if (t) { fclose(t); g_log_path = "sdmc:/config/usbaudio/log.txt"; }
+    else {
         stage("config/usbaudio/log.txt could not be opened, using sdmc:/usbaudio_log.txt");
-        g_log = fopen("sdmc:/usbaudio_log.txt", "w");
+        t = fopen("sdmc:/usbaudio_log.txt", "w");
+        if (t) { fclose(t); g_log_path = "sdmc:/usbaudio_log.txt"; }
     }
     load_config();
     LOG("usbaudio sysmodule v0.1 starting (gain=%u%%)", g_gain);
