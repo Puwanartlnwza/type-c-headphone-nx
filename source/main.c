@@ -12,6 +12,14 @@
 #include "audrec.h"
 #include "usbout.h"
 
+// Startup breadcrumbs: appended to sdmc:/usbaudio_stage.txt (SD root) so we can see how far we got.
+static void stage(const char *msg) {
+    FILE *f = fopen("sdmc:/usbaudio_stage.txt", "a");
+    if (!f) return;
+    fprintf(f, "%s\n", msg);
+    fclose(f);
+}
+
 // ---- libnx sysmodule plumbing ----
 #define INNER_HEAP_SIZE 0x60000
 u32 __nx_applet_type = AppletType_None;
@@ -41,6 +49,7 @@ void __appInit(void) {
     rc = fsInitialize();
     if (R_FAILED(rc)) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
     fsdevMountSdmc();
+    stage("appInit done (sm, setsys, fs, sdmc ok)");
 }
 
 void __appExit(void) {
@@ -175,13 +184,20 @@ static int run_session(void) {
 }
 
 int main(void) {
+    stage("main entered");
     mkdir("sdmc:/config", 0777);
     mkdir("sdmc:/config/usbaudio", 0777);
     g_log = fopen("sdmc:/config/usbaudio/log.txt", "w");
+    if (!g_log) {
+        stage("config/usbaudio/log.txt could not be opened, using sdmc:/usbaudio_log.txt");
+        g_log = fopen("sdmc:/usbaudio_log.txt", "w");
+    }
     load_config();
     LOG("usbaudio sysmodule v0.1 starting (gain=%u%%)", g_gain);
 
+    stage("calling usbHsInitialize");
     while (R_FAILED(usbHsInitialize())) svcSleepThread(1000000000ULL);
+    stage("usbHsInitialize ok, entering main loop");
     LOG("usb:hs ready");
 
     for (;;) {
