@@ -1,351 +1,192 @@
-// USB Audio Probe v2
-// Y = play a 3 s 440 Hz test tone on the EarPods (low volume)
-// A = rescan interfaces, X = acquire device and dump full config descriptor
-// (hex + parsed alt settings / endpoints / formats / clock + sample rates),
-// + = exit. Everything is also written to sdmc:/usbaudio_probe.txt
+// usbaudio: Atmosphere sysmodule that records the Switch's final audio output (audrec:u)
+// and plays it on Apple USB-C EarPods through usb:hs (isochronous, UAC2).
+// Log: sdmc:/config/usbaudio/log.txt   Config: sdmc:/config/usbaudio/config.ini  (gain=NN percent)
+#include <switch.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
-#include <switch.h>
+#include <stdarg.h>
+#include <sys/stat.h>
 
+#include "ring.h"
+#include "audrec.h"
+#include "usbout.h"
+
+// ---- libnx sysmodule plumbing ----
+#define INNER_HEAP_SIZE 0x60000
+u32 __nx_applet_type = AppletType_None;
+u32 __nx_fs_num_sessions = 1;
+size_t nx_inner_heap_size = INNER_HEAP_SIZE;
+char   nx_inner_heap[INNER_HEAP_SIZE];
+
+void __libnx_initheap(void) {
+    extern void *fake_heap_start;
+    extern void *fake_heap_end;
+    fake_heap_start = nx_inner_heap;
+    fake_heap_end   = nx_inner_heap + nx_inner_heap_size;
+}
+
+void __appInit(void) {
+    Result rc = smInitialize();
+    if (R_FAILED(rc)) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
+
+    rc = setsysInitialize();
+    if (R_SUCCEEDED(rc)) {
+        SetSysFirmwareVersion fw;
+        rc = setsysGetFirmwareVersion(&fw);
+        if (R_SUCCEEDED(rc)) hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro));
+        setsysExit();
+    }
+
+    rc = fsInitialize();
+    if (R_FAILED(rc)) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
+    fsdevMountSdmc();
+}
+
+void __appExit(void) {
+    fsdevUnmountAll();
+    fsExit();
+    smExit();
+}
+
+// ---- logging / config ----
 static FILE *g_log;
-#define OUT(...) do { printf(__VA_ARGS__); if (g_log) fprintf(g_log, __VA_ARGS__); } while (0)
+static u32 g_gain = 40;           // percent; EarPods are loud
 
-static UsbHsInterface g_ifs[16];
-static s32 g_total;
-static int g_clock_id = -1;
-static int g_ac_if = 0;
-
-static void scan(void) {
-    UsbHsInterfaceFilter filter;
-    memset(&filter, 0, sizeof(filter));   // Flags = 0: match everything
-    memset(g_ifs, 0, sizeof(g_ifs));
-    g_total = 0;
-
-    Result rc = usbHsQueryAvailableInterfaces(&filter, g_ifs, sizeof(g_ifs), &g_total);
-    OUT("\n--- scan: rc=0x%x, interfaces=%d ---\n", rc, g_total);
-    if (R_FAILED(rc)) { g_total = 0; return; }
-
-    for (s32 i = 0; i < g_total && i < 16; i++) {
-        struct usb_interface_descriptor *d = &g_ifs[i].inf.interface_desc;
-        OUT("[%d] VID %04x PID %04x if#%d alt%d class %02x/%02x/%02x\n",
-            i, g_ifs[i].device_desc.idVendor, g_ifs[i].device_desc.idProduct,
-            d->bInterfaceNumber, d->bAlternateSetting,
-            d->bInterfaceClass, d->bInterfaceSubClass, d->bInterfaceProtocol);
-    }
-    if (g_log) fflush(g_log);
-}
-
-static void hex_to_log(const u8 *p, u32 n) {
+static void LOG(const char *fmt, ...) {
     if (!g_log) return;
-    fprintf(g_log, "RAW CONFIG DESCRIPTOR (%u bytes):\n", n);
-    for (u32 i = 0; i < n; i++) {
-        fprintf(g_log, "%02x%s", p[i], (i % 16 == 15 || i + 1 == n) ? "\n" : " ");
-    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_log, fmt, ap);
+    va_end(ap);
+    fputc('\n', g_log);
+    fflush(g_log);
 }
 
-static void parse_config(const u8 *d, u32 len) {
-    int cls = -1, sub = -1;
-    u32 i = 0;
-    g_clock_id = -1;
-    while (i + 2 <= len) {
-        u8 l = d[i], t = d[i + 1];
-        if (l < 2 || i + l > len) break;
-
-        if (t == 0x04 && l >= 9) {                    // interface
-            cls = d[i + 5]; sub = d[i + 6];
-            OUT("IF %d alt %d eps %d class %02x/%02x\n", d[i + 2], d[i + 3], d[i + 4], cls, sub);
-            if (cls == 1 && sub == 1) g_ac_if = d[i + 2];
-        } else if (t == 0x05 && l >= 7) {             // endpoint
-            u16 mp = d[i + 4] | (d[i + 5] << 8);
-            OUT("  EP 0x%02x attr 0x%02x pkt %u itv %u\n", d[i + 2], d[i + 3], mp, d[i + 6]);
-        } else if (t == 0x24 && cls == 1 && l >= 4) { // class-specific interface
-            u8 st = d[i + 2];
-            if (sub == 1 && st == 0x0a && l >= 8) {   // UAC2 clock source
-                OUT("  ClockSource id %d\n", d[i + 3]);
-                if (g_clock_id < 0) g_clock_id = d[i + 3];
-            } else if (sub == 2 && st == 0x01 && l >= 16) {   // AS_GENERAL
-                OUT("  AS_GENERAL ch %d fmt %02x%02x%02x%02x\n",
-                    d[i + 10], d[i + 9], d[i + 8], d[i + 7], d[i + 6]);
-            } else if (sub == 2 && st == 0x02 && l >= 6) {    // FORMAT_TYPE
-                OUT("  FORMAT subslot %d bytes, %d bits\n", d[i + 4], d[i + 5]);
-            }
-        }
-        i += l;
+static void load_config(void) {
+    FILE *f = fopen("sdmc:/config/usbaudio/config.ini", "r");
+    if (!f) return;
+    char line[64];
+    while (fgets(line, sizeof(line), f)) {
+        unsigned v;
+        if (sscanf(line, "gain=%u", &v) == 1 && v <= 100) g_gain = v;
     }
+    fclose(f);
 }
 
-static void dump_config(void) {
-    if (g_total < 1) { OUT("no device: press A to scan first\n"); return; }
+// ---- streaming session ----
+#define RECN 4
+static Ring         g_ring;
+static UsbOut       g_usb;
+static AudRec       g_rec;
+static AudRecBuffer g_rb[RECN];
+static u8           g_recmem[RECN * 0x1000] __attribute__((aligned(0x1000)));
 
-    UsbHsClientIfSession s;
-    Result rc = 1;
-    s32 used = -1;
-    for (s32 i = 0; i < g_total && i < 16; i++) {
-        rc = usbHsAcquireUsbIf(&s, &g_ifs[i]);
-        OUT("acquire [%d]: 0x%x\n", i, rc);
-        if (R_SUCCEEDED(rc)) { used = i; break; }
-    }
-    if (used < 0) return;
-
-    u8 *buf = aligned_alloc(0x1000, 0x1000);
-    if (!buf) { OUT("alloc failed\n"); usbHsIfClose(&s); return; }
-    u32 got = 0;
-
-    memset(buf, 0, 0x1000);
-    rc = usbHsIfCtrlXfer(&s, 0x80, 6, 0x0200, 0, 9, buf, &got);
-    OUT("get cfg hdr: rc=0x%x got=%u\n", rc, got);
-    if (R_SUCCEEDED(rc) && got >= 4) {
-        u32 total = buf[2] | (buf[3] << 8);
-        if (total > 0x1000) total = 0x1000;
-        memset(buf, 0, 0x1000);
-        got = 0;
-        rc = usbHsIfCtrlXfer(&s, 0x80, 6, 0x0200, 0, (u16)total, buf, &got);
-        OUT("get cfg full: rc=0x%x got=%u (want %u)\n", rc, got, total);
-        if (R_SUCCEEDED(rc)) {
-            hex_to_log(buf, got);
-            parse_config(buf, got);
-        }
-    }
-
-    if (g_clock_id >= 0) {
-        u16 idx = (u16)((g_clock_id << 8) | g_ac_if);
-        u32 hz = 0;
-
-        memset(buf, 0, 0x1000);
-        got = 0;
-        rc = usbHsIfCtrlXfer(&s, 0xA1, 0x01, 0x0100, idx, 4, buf, &got);
-        memcpy(&hz, buf, 4);
-        OUT("cur rate: rc=0x%x %u Hz\n", rc, hz);
-
-        memset(buf, 0, 0x1000);
-        got = 0;
-        rc = usbHsIfCtrlXfer(&s, 0xA1, 0x02, 0x0100, idx, 2 + 12 * 8, buf, &got);
-        OUT("rate range: rc=0x%x got=%u\n", rc, got);
-        if (R_SUCCEEDED(rc) && got >= 2) {
-            u32 n = buf[0] | (buf[1] << 8);
-            for (u32 k = 0; k < n && 2 + 12 * (k + 1) <= got; k++) {
-                u32 mn, mx, rs;
-                memcpy(&mn, buf + 2 + 12 * k, 4);
-                memcpy(&mx, buf + 6 + 12 * k, 4);
-                memcpy(&rs, buf + 10 + 12 * k, 4);
-                OUT("  range %u..%u step %u\n", mn, mx, rs);
-            }
-        }
-    }
-
-    free(buf);
-    usbHsIfClose(&s);
-    if (g_log) fflush(g_log);
+static Result rec_arm(int i) {
+    AudRecBuffer *b = &g_rb[i];
+    memset(b, 0, sizeof(*b));
+    b->sample_buffer = (u64)(uintptr_t)(g_recmem + i * 0x1000);
+    b->capacity = 0x1000;
+    b->size = 0x1000;
+    return audrec_append(&g_rec, b);
 }
 
-// ---- tone test: 440 Hz sine, 48 kHz / 16-bit / stereo, ~3 s, LOW volume ----
-#define STREAM_IF   1      // Audio Streaming (playback)
-#define STREAM_ALT  2      // alt 2 = 16-bit stereo, 192-byte packets
-#define STREAM_EP   0x02
-#define PKT_BYTES   192
-#define CLOCK_ID    9
-#define CHUNK_PKTS  20     // 20 ms per post
-#define CHUNK_BYTES (PKT_BYTES * CHUNK_PKTS)
-#define BATCH_PKTS  16     // packets per batch (usb:hs rejected 64 URBs per batch)
-#define BATCH_BYTES (PKT_BYTES * BATCH_PKTS)
-#define NBUF        4      // batches kept in flight (16 ms each)
-#define BUF_STRIDE  0x1000 // every batch buffer starts on its own page
+// returns 0 = no device (idle), 1 = session ended (error / unplug)
+static int run_session(void) {
+    ring_init(&g_ring);
 
-static void fill_sine(s16 *out, int frames, double *phase) {
-    const double step = 2.0 * 3.14159265358979 * 440.0 / 48000.0;
-    for (int f = 0; f < frames; f++) {
-        s16 v = (s16)(sin(*phase) * 2500.0);       // ~8% of full scale
-        *phase += step;
-        if (*phase > 6.283185307179586) *phase -= 6.283185307179586;
-        out[f * 2] = v;
-        out[f * 2 + 1] = v;
+    Result rc = usbout_open(&g_usb, &g_ring, g_gain);
+    if (rc == UO_NOT_FOUND) { usbout_close(&g_usb, false); return 0; }
+    if (R_FAILED(rc)) {
+        LOG("usb open failed: 0x%x", rc);
+        usbout_close(&g_usb, true);
+        return 1;
     }
-}
+    LOG("usb open ok, frame0=%u gain=%u%%", g_usb.frame0, g_gain);
 
-// variant bit0: start frame -> unk1, bit1: map buffers with CreateSmmuSpace, bit2: start frame -> unk2
-static Result post_batch(UsbHsClientEpSession *ep, void *buf, u32 *urbs, int variant, u32 frame0, int seq, u32 *xferId) {
-    u32 f = frame0 + 8 + (u32)seq * BATCH_PKTS;   // start a few ms in the future, then back-to-back
-    u32 u1 = (variant & 1) ? f : 0;
-    u32 u2 = (variant & 4) ? f : 0;
-    return usbHsEpBatchBufferAsync(ep, buf, urbs, BATCH_PKTS, 0, u1, u2, xferId);
-}
-
-static void tone_test(int variant) {
-    OUT("\n=== tone test, variant %d ===\n", variant);
-    s32 idx = -1;
-    for (s32 i = 0; i < g_total && i < 16; i++) {
-        struct usb_interface_descriptor *d = &g_ifs[i].inf.interface_desc;
-        if (d->bInterfaceClass == 1 && d->bInterfaceSubClass == 2 && d->bInterfaceNumber == STREAM_IF) { idx = i; break; }
+    rc = audrec_open(&g_rec, 48000);
+    if (R_FAILED(rc)) {
+        LOG("audrec open failed: 0x%x", rc);
+        usbout_close(&g_usb, true);
+        return 1;
     }
-    if (idx < 0) { OUT("streaming interface not found: press A to scan first\n"); return; }
+    LOG("audrec open ok: rate=%u ch=%u fmt=%u state=%u", g_rec.sample_rate, g_rec.channels, g_rec.format, g_rec.state);
 
-    UsbHsClientIfSession s;
-    Result rc = usbHsAcquireUsbIf(&s, &g_ifs[idx]);
-    OUT("tone: acquire if#%d: 0x%x\n", STREAM_IF, rc);
-    if (R_FAILED(rc)) return;
-
-    u8 *buf = aligned_alloc(0x1000, 0x2000);
-    if (!buf) { OUT("alloc failed\n"); usbHsIfClose(&s); return; }
-    u32 got = 0;
-
-    // 1) sample rate -> 48000 (UAC2 SET_CUR on clock source)
-    u32 hz = 48000;
-    memcpy(buf, &hz, 4);
-    rc = usbHsIfCtrlXfer(&s, 0x21, 0x01, 0x0100, (u16)((CLOCK_ID << 8) | 0), 4, buf, &got);
-    OUT("set rate 48000: rc=0x%x\n", rc);
-
-    // 2) select alt setting through usb:hs so Horizon refreshes its endpoint list
-    UsbHsInterfaceInfo info;
-    memset(&info, 0, sizeof(info));
-    rc = usbHsIfSetInterface(&s, &info, STREAM_ALT);
-    OUT("set alt %d (usb:hs): rc=0x%x\n", STREAM_ALT, rc);
-    if (R_SUCCEEDED(rc)) {
-        OUT("  now alt %d, eps %d\n", info.interface_desc.bAlternateSetting, info.interface_desc.bNumEndpoints);
-        for (int j = 0; j < 15; j++) {
-            struct usb_endpoint_descriptor *e = &info.output_endpoint_descs[j];
-            if (e->bLength) OUT("  OUT ep 0x%02x attr 0x%02x pkt %u itv %u\n",
-                                e->bEndpointAddress, e->bmAttributes, e->wMaxPacketSize, e->bInterval);
-        }
+    for (int i = 0; i < RECN; i++) {
+        rc = rec_arm(i);
+        if (R_FAILED(rc)) LOG("audrec append %d failed: 0x%x", i, rc);
     }
+    rc = audrec_start(&g_rec);
+    LOG("audrec start: 0x%x", rc);
 
-    // 3) open the isochronous OUT endpoint (prefer the descriptor Horizon reports)
-    struct usb_endpoint_descriptor desc;
-    memset(&desc, 0, sizeof(desc));
-    desc.bLength = 7;
-    desc.bDescriptorType = 5;
-    desc.bEndpointAddress = STREAM_EP;
-    desc.bmAttributes = 0x0d;
-    desc.wMaxPacketSize = PKT_BYTES;
-    desc.bInterval = 1;
-    for (int j = 0; j < 15; j++) {
-        if (info.output_endpoint_descs[j].bLength && info.output_endpoint_descs[j].bEndpointAddress == STREAM_EP)
-            desc = info.output_endpoint_descs[j];
-    }
+    bool reset_dev = false;
+    int timeouts = 0, stats = 0;
+    u32 captured = 0;
 
-    UsbHsClientEpSession ep;
-    u16 urb_try[3] = { 32, 24, 16 };
-    for (int k = 0; k < 3; k++) {
-        rc = usbHsIfOpenUsbEp(&s, &ep, urb_try[k], BATCH_BYTES, &desc);
-        OUT("open ep 0x%02x (maxUrb %u, maxXfer %u): rc=0x%x\n", STREAM_EP, urb_try[k], BATCH_BYTES, rc);
-        if (R_SUCCEEDED(rc)) break;
-    }
+    for (;;) {
+        Waiter ws[2] = { waiterForEvent(&g_rec.ev), waiterForEvent(g_usb.ev) };
+        s32 idx = -1;
+        Result w = waitObjects(&idx, ws, 2, 200000000ULL);
 
-    if (R_SUCCEEDED(rc)) {
-        // Batches of 16 one-packet URBs; each batch buffer starts on a 0x1000 boundary.
-        u8 *bufs = aligned_alloc(0x1000, (size_t)NBUF * BUF_STRIDE);
-        if (!bufs) { OUT("batch alloc failed\n"); }
-        else {
-            double phase = 0.0;
-            u32 urbs[BATCH_PKTS];
-            u32 ids[NBUF];
-            for (int i = 0; i < BATCH_PKTS; i++) urbs[i] = PKT_BYTES;
+        if (R_SUCCEEDED(w)) {
+            timeouts = 0;
+            if (idx == 0) {
+                eventClear(&g_rec.ev);
+                AudRecBuffer *done[RECN];
+                u32 n = 0;
+                audrec_released(&g_rec, done, RECN, &n);
+                for (u32 i = 0; i < n; i++) {
+                    AudRecBuffer *b = done[i];
+                    u32 size = (u32)b->size;
+                    if (size == 0 || size > b->capacity) size = (u32)b->capacity;
+                    size &= ~3u;
+                    const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
+                    ring_push(&g_ring, src, size);
 
-            if (variant & 2) {
-                Result sr = usbHsEpCreateSmmuSpace(&ep, bufs, NBUF * BUF_STRIDE);
-                OUT("CreateSmmuSpace: rc=0x%x\n", sr);
-            }
-            u32 frame0 = 0;
-            if (variant & 5) {
-                Result fr = usbHsIfGetCurrentFrame(&s, &frame0);
-                OUT("current frame: rc=0x%x value=%u\n", fr, frame0);
-            }
-
-            const int total = 188;                  // 188 x 16 ms = ~3 s
-            int posted = 0, done = 0, errs = 0, shown = 0;
-            Event *ev = usbHsEpGetXferEvent(&ep);
-
-            for (int i = 0; i < NBUF && posted < total; i++) {
-                fill_sine((s16 *)(bufs + i * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                Result r = post_batch(&ep, bufs + i * BUF_STRIDE, urbs, variant, frame0, posted, &ids[i]);
-                OUT("batch %d post: rc=0x%x\n", i, r);
-                if (R_FAILED(r)) { errs++; break; }
-                posted++;
-            }
-
-            int cnt[NBUF] = { 0 };
-            for (int i = 0; i < posted; i++) OUT("  batch %d xferId=%u\n", i, ids[i]);
-
-            // reports arrive per URB; a batch is finished after BATCH_PKTS of them
-            while (done < posted * BATCH_PKTS && !errs) {
-                Result w = eventWait(ev, 500000000ULL);   // 500 ms
-                if (R_FAILED(w)) { OUT("event wait: rc=0x%x (posted %d, urbs done %d)\n", w, posted, done); errs++; break; }
-                eventClear(ev);
-
-                for (;;) {
-                    UsbHsXferReport reps[NBUF * BATCH_PKTS];
-                    u32 n = 0;
-                    Result r = usbHsEpGetXferReport(&ep, reps, NBUF * BATCH_PKTS, &n);
-                    if (R_FAILED(r)) { OUT("get report: rc=0x%x\n", r); errs++; break; }
-                    if (n == 0) break;
-
-                    for (u32 k = 0; k < n; k++) {
-                        if (shown < 6) { OUT("report: id=%u res=0x%x size=%u\n", reps[k].xferId, reps[k].res, reps[k].transferredSize); shown++; }
-                        if (R_FAILED(reps[k].res)) { if (errs++ < 3) OUT("xfer failed: rc=0x%x\n", reps[k].res); }
-                        done++;
-                        for (int sl = 0; sl < NBUF; sl++) {
-                            if (ids[sl] != reps[k].xferId) continue;
-                            if (++cnt[sl] == BATCH_PKTS) {
-                                cnt[sl] = 0;
-                                if (posted < total) {
-                                    fill_sine((s16 *)(bufs + sl * BUF_STRIDE), BATCH_PKTS * PKT_BYTES / 4, &phase);
-                                    Result pr = post_batch(&ep, bufs + sl * BUF_STRIDE, urbs, variant, frame0, posted, &ids[sl]);
-                                    if (R_FAILED(pr)) { OUT("repost: rc=0x%x\n", pr); errs++; }
-                                    else posted++;
-                                }
-                            }
-                            break;
-                        }
+                    if (stats < 20 && (captured++ % 100) == 1) {
+                        s16 peak = 0;
+                        const s16 *p = (const s16 *)src;
+                        for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
+                        LOG("rec: size=%u peak=%d ring=%u underruns=%u batches=%u", size, peak, ring_level(&g_ring), g_usb.underruns, g_usb.batches);
+                        stats++;
                     }
+                    b->size = b->capacity;
+                    audrec_append(&g_rec, b);
                 }
+            } else {
+                eventClear(g_usb.ev);
             }
-            OUT("tone done: batches posted=%d urbs done=%d errs=%d\n", posted, done, errs);
-            free(bufs);
+        } else if (R_VALUE(w) == KERNELRESULT(TimedOut)) {
+            if (++timeouts > 10) { LOG("no events for 2 s, ending session"); break; }
+        } else {
+            LOG("wait failed: 0x%x", w);
+            break;
         }
-        usbHsEpClose(&ep);
+
+        rc = usbout_pump(&g_usb, &g_ring, g_gain);
+        if (R_FAILED(rc)) { LOG("usb pump error: 0x%x", rc); reset_dev = true; break; }
     }
 
-    // back to alt 0, then reset the device (same effect as unplug/replug)
-    usbHsIfSetInterface(&s, &info, 0);
-    free(buf);
-    Result rr = usbHsIfResetDevice(&s);
-    OUT("reset device: rc=0x%x -> wait ~3 s, then press A to rescan\n", rr);
-    g_total = 0;
-    usbHsIfClose(&s);
-    if (g_log) fflush(g_log);
+    audrec_stop(&g_rec);
+    audrec_close(&g_rec);
+    usbout_close(&g_usb, reset_dev);
+    LOG("session ended (underruns=%u batches=%u)", g_usb.underruns, g_usb.batches);
+    return 1;
 }
 
 int main(void) {
-    consoleInit(NULL);
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    PadState pad;
-    padInitializeDefault(&pad);
+    mkdir("sdmc:/config", 0777);
+    mkdir("sdmc:/config/usbaudio", 0777);
+    g_log = fopen("sdmc:/config/usbaudio/log.txt", "w");
+    load_config();
+    LOG("usbaudio sysmodule v0.1 starting (gain=%u%%)", g_gain);
 
-    g_log = fopen("sdmc:/usbaudio_probe.txt", "w");
+    while (R_FAILED(usbHsInitialize())) svcSleepThread(1000000000ULL);
+    LOG("usb:hs ready");
 
-    Result rc = usbHsInitialize();
-    OUT("usbHsInitialize: 0x%x\n", rc);
-    OUT("A = rescan, X = dump config, Y/L/R/ZR = test tone variants (low vol), + = exit\n");
-    if (R_SUCCEEDED(rc)) scan();
-
-    while (appletMainLoop()) {
-        padUpdate(&pad);
-        u64 down = padGetButtonsDown(&pad);
-        if (down & HidNpadButton_Plus) break;
-        if (R_SUCCEEDED(rc)) {
-            if (down & HidNpadButton_A) scan();
-            if (down & HidNpadButton_X) dump_config();
-            if (down & HidNpadButton_Y)  tone_test(0);   // baseline
-            if (down & HidNpadButton_L)  tone_test(1);   // start frame in unk1
-            if (down & HidNpadButton_R)  tone_test(4);   // start frame in unk2
-            if (down & HidNpadButton_ZR) tone_test(2);   // buffers mapped with SmmuSpace
-        }
-        consoleUpdate(NULL);
+    for (;;) {
+        int r = run_session();
+        svcSleepThread(r == 0 ? 1000000000ULL : 3000000000ULL);
     }
-
-    if (R_SUCCEEDED(rc)) usbHsExit();
-    if (g_log) fclose(g_log);
-    consoleExit(NULL);
     return 0;
 }

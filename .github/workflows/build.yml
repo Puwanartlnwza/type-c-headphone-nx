@@ -11,5 +11,5 @@ jobs:
       - run: make
       - uses: actions/upload-artifact@v4
         with:
-          name: usbaudio_probe
-          path: usbaudio_probe.nro
+          name: usbaudio-sysmodule
+          path: out/
