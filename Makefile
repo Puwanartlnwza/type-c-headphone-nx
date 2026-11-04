@@ -8,7 +8,7 @@ TARGET   := usbaudio
 LIBTESLA ?= libtesla
 ARCH     := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CXXFLAGS := -O2 -Wall -ffunction-sections $(ARCH) -D__SWITCH__ -I$(DEVKITPRO)/libnx/include -I$(LIBTESLA)/include \
-            -std=c++20 -Wno-dangling-else -fno-rtti -fno-exceptions
+            -std=c++20 -Wno-dangling-else
 LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH)
 LIBS     := -L$(DEVKITPRO)/libnx/lib -lnx -lm
 
