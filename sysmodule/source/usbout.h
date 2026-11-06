@@ -24,6 +24,7 @@ typedef struct {
     int  cnt[UO_NBUF];
     u32  urbs[UO_BATCH];
     u32  underruns, batches;
+    s32  peak_out;              // loudest sample actually sent since last reset
     Event *ev;
 } UsbOut;
 

@@ -60,6 +60,8 @@ void __appExit(void) {
 
 // ---- logging / config ----
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
+#define APP_VERSION "0.2"
+static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
 static u32 g_gain = 20;           // percent; EarPods are loud (change with the overlay slider or config.ini)
 
 // Open/append/close on every line: an always-open file is not committed to the SD until closed,
@@ -82,7 +84,9 @@ static void load_config(void) {
     char line[64];
     while (fgets(line, sizeof(line), f)) {
         unsigned v;
+        unsigned long long a;
         if (sscanf(line, "gain=%u", &v) == 1 && v <= 100) g_gain = v;
+        if (sscanf(line, "aruid=%llx", &a) == 1) g_aruid = (u64)a;
     }
     fclose(f);
 }
@@ -136,15 +140,15 @@ static int run_session(void) {
         usbout_close(&g_usb, true);
         return 1;
     }
-    LOG("usb open ok, frame0=%u gain=%u%%", g_usb.frame0, g_gain);
+    LOG("usb ok frame0=%u gain=%u", g_usb.frame0, g_gain);
 
-    rc = audrec_open(&g_rec, 48000);
+    rc = audrec_open(&g_rec, 48000, g_aruid);
     if (R_FAILED(rc)) {
         LOG("audrec open failed: 0x%x", rc);
         usbout_close(&g_usb, true);
         return 1;
     }
-    LOG("audrec open ok: rate=%u ch=%u fmt=%u state=%u", g_rec.sample_rate, g_rec.channels, g_rec.format, g_rec.state);
+    LOG("audrec ok rate=%u ch=%u fmt=%u aruid=%llx", g_rec.sample_rate, g_rec.channels, g_rec.format, (unsigned long long)g_aruid);
 
     for (int i = 0; i < RECN; i++) {
         rc = rec_arm(i);
@@ -179,11 +183,12 @@ static int run_session(void) {
                     const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
                     ring_push(&g_ring, src, size);
 
-                    if (stats < 120 && (captured++ % 250) == 1) {
+                    if (stats < 200 && (captured++ % 200) == 1) {
                         s16 peak = 0;
                         const s16 *p = (const s16 *)src;
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
-                        LOG("t=%ums rec: size=%u peak=%d ring=%u underruns=%u batches=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), size, peak, ring_level(&g_ring), g_usb.underruns, g_usb.batches);
+                        LOG("t=%u in=%d out=%d ring=%u ur=%u b=%u g=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), peak, g_usb.peak_out, ring_level(&g_ring), g_usb.underruns, g_usb.batches, g_gain);
+                        g_usb.peak_out = 0;
                         stats++;
                     }
                     b->size = b->capacity;
@@ -207,7 +212,7 @@ static int run_session(void) {
 
         rc = usbout_pump(&g_usb, &g_ring, g_gain);
         if (R_FAILED(rc)) {
-            LOG("usb pump error: 0x%x (batches=%u underruns=%u), restarting the USB stream", rc, g_usb.batches, g_usb.underruns);
+            LOG("usb err 0x%x b=%u ur=%u, restarting stream", rc, g_usb.batches, g_usb.underruns);
             usbout_close(&g_usb, false);
             rc = usbout_open(&g_usb, &g_ring, g_gain);
             if (R_FAILED(rc)) { LOG("stream restart failed: 0x%x", rc); reset_dev = true; break; }
@@ -234,7 +239,7 @@ int main(void) {
         if (t) { fclose(t); g_log_path = "sdmc:/usbaudio_log.txt"; }
     }
     load_config();
-    LOG("usbaudio sysmodule v0.1 starting (gain=%u%%)", g_gain);
+    LOG("usbaudio v" APP_VERSION " start gain=%u", g_gain);
 
     stage("calling usbHsInitialize");
     while (R_FAILED(usbHsInitialize())) svcSleepThread(1000000000ULL);

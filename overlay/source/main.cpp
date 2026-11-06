@@ -8,6 +8,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <deque>
+#include <vector>
+#include <memory>
 #include <sys/stat.h>
 
 #define CFG_DIR "sdmc:/config/usbaudio"
@@ -65,6 +68,40 @@ static std::string read_status() {
     return s.empty() ? "unknown" : s;
 }
 
+static std::vector<std::string> read_log_tail(size_t max_lines) {
+    std::deque<std::string> q;
+    FILE *f = fopen(CFG_DIR "/log.txt", "r");
+    if (!f) f = fopen("sdmc:/usbaudio_log.txt", "r");
+    if (!f) return { "log.txt not found" };
+    char buf[256];
+    while (fgets(buf, sizeof(buf), f)) {
+        std::string l(buf);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.size() > 60) l.resize(60);
+        q.push_back(l);
+        if (q.size() > max_lines) q.pop_front();
+    }
+    fclose(f);
+    if (q.empty()) q.push_back("(log is empty)");
+    return std::vector<std::string>(q.begin(), q.end());
+}
+
+class GuiLog : public tsl::Gui {
+public:
+    virtual tsl::elm::Element *createUI() override {
+        auto *frame = new tsl::elm::OverlayFrame("USB Audio", "log (last lines)");
+        auto lines = std::make_shared<std::vector<std::string>>(read_log_tail(30));
+        frame->setContent(new tsl::elm::CustomDrawer([lines](tsl::gfx::Renderer *r, s32 x, s32 y, s32 w, s32 h) {
+            s32 ly = y + 18;
+            for (const auto &l : *lines) {
+                r->drawString(l.c_str(), false, x + 6, ly, 13, tsl::style::color::ColorText);
+                ly += 16;
+            }
+        }));
+        return frame;
+    }
+};
+
 class GuiMain : public tsl::Gui {
 public:
     virtual tsl::elm::Element *createUI() override {
@@ -83,6 +120,13 @@ public:
         gain->setProgress((u8)read_gain());
         gain->setValueChangedListener([](u8 value) { write_gain(value); });
         list->addItem(gain);
+
+        auto *logItem = new tsl::elm::ListItem("View log");
+        logItem->setClickListener([](u64 keys) {
+            if (keys & HidNpadButton_A) { tsl::changeTo<GuiLog>(); return true; }
+            return false;
+        });
+        list->addItem(logItem);
 
         frame->setContent(list);
         return frame;

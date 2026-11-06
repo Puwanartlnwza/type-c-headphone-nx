@@ -3,7 +3,7 @@
 
 // audrec:u = nn::audio::detail::IFinalOutputRecorderManager (see switchbrew "Audio services")
 
-Result audrec_open(AudRec *r, u32 sample_rate) {
+Result audrec_open(AudRec *r, u32 sample_rate, u64 aruid) {
     memset(r, 0, sizeof(*r));
 
     Service mgr;
@@ -11,7 +11,7 @@ Result audrec_open(AudRec *r, u32 sample_rate) {
     if (R_FAILED(rc)) return rc;
 
     // FinalOutputRecorderParameter (u32 sample rate), process handle, AppletResourceUserId
-    const struct { u32 sample_rate; u32 pad; u64 aruid; } in = { sample_rate, 0, 0 };
+    const struct { u32 sample_rate; u32 pad; u64 aruid; } in = { sample_rate, 0, aruid };
     struct { u32 sample_rate, channels, format, state; } out;
     memset(&out, 0, sizeof(out));
 

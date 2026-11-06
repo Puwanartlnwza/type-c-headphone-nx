@@ -17,7 +17,7 @@ typedef struct {
     u32 sample_rate, channels, format, state;   // FinalOutputRecorderParameterInternal
 } AudRec;
 
-Result audrec_open(AudRec *r, u32 sample_rate);
+Result audrec_open(AudRec *r, u32 sample_rate, u64 aruid);
 Result audrec_start(AudRec *r);
 void   audrec_stop(AudRec *r);
 Result audrec_append(AudRec *r, AudRecBuffer *b);

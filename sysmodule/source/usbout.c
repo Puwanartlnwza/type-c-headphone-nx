@@ -14,10 +14,15 @@ static void fill_batch(UsbOut *u, int sl, Ring *ring, u32 gain) {
     // gain is a 0-100 slider; the real factor is (gain/100)^2 so the low end has fine steps
     // (20 -> 4 %, about -28 dB; 50 -> 25 %; 100 -> unchanged)
     s32 mul = (s32)(gain * gain);
-    if (mul < 10000) {
-        s16 *p = (s16 *)dst;
-        for (u32 i = 0; i < want / 2; i++) p[i] = (s16)(((s32)p[i] * mul) / 10000);
+    s16 *p = (s16 *)dst;
+    s32 pk = 0;
+    for (u32 i = 0; i < want / 2; i++) {
+        s32 v = p[i];
+        if (mul < 10000) { v = (v * mul) / 10000; p[i] = (s16)v; }
+        s32 a = v < 0 ? -v : v;
+        if (a > pk) pk = a;
     }
+    if (pk > u->peak_out) u->peak_out = pk;
 }
 
 static Result post_batch(UsbOut *u, int sl) {
