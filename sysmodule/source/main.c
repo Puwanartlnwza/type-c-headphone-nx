@@ -63,7 +63,13 @@ void __appExit(void) {
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
 #define APP_VERSION "0.3"
 static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
-static u32 g_gain = 50;           // percent; EarPods are loud (change with the overlay slider or config.ini)
+static u32 g_gain = 50;
+static u32 g_sysvol = 15;         // console volume 0-15
+static u32 g_mul = 2500;          // final multiplier, 1/10000 units (see update_volume)
+static s32 g_in_peak = 0;         // loudest captured sample since the last status write
+static s32 g_out_peak = 0;        // loudest sample sent to the earphones since the last status write
+static u32 g_stat_ur = 0, g_refresh_total = 0;
+static char g_state[24] = "starting";           // percent; EarPods are loud (change with the overlay slider or config.ini)
 
 // Open/append/close on every line: an always-open file is not committed to the SD until closed,
 // so it would never show up when the card is read on a PC.
@@ -105,18 +111,23 @@ static void poll_config(void) {
     load_config();                // gain= (live)
 }
 
-static void set_status(const char *st) {
-    static char last[24] = "";
-    if (strncmp(last, st, sizeof(last)) == 0) return;
-    strncpy(last, st, sizeof(last) - 1);
+static void write_status(void) {
     FILE *f = fopen("sdmc:/config/usbaudio/status.txt", "w");
-    if (f) { fprintf(f, "%s v" APP_VERSION "\n", st); fclose(f); }
+    if (!f) return;
+    fprintf(f, "%s v" APP_VERSION "\n", g_state);
+    fprintf(f, "sys=%u slider=%u mul=%u\n", g_sysvol, g_gain, g_mul);
+    fprintf(f, "in=%d out=%d ur=%u rf=%u\n", g_in_peak, g_out_peak, g_stat_ur, g_refresh_total);
+    fclose(f);
+}
+
+static void set_status(const char *st) {
+    if (strncmp(g_state, st, sizeof(g_state)) == 0) return;
+    strncpy(g_state, st, sizeof(g_state) - 1);
+    write_status();
 }
 
 // Final volume = slider trim (gain/100)^2  x  console volume 0-15 (0.7236^(15-v), same curve as nx-btred).
 // The recorded signal is taken BEFORE the console volume, so we apply it ourselves.
-static u32 g_sysvol = 15;
-static u32 g_mul = 2500;          // 1/10000 units, recomputed by update_volume()
 
 static void update_volume(void) {
     SetSysAudioVolume v;
@@ -182,7 +193,7 @@ static int run_session(void) {
     rc = audrec_start(&g_rec);
     LOG("audrec start: 0x%x", rc);
     set_status("streaming");
-    u64 last_poll = ms_now(), last_vol = ms_now(), last_refresh = 0;
+    u64 last_poll = ms_now(), last_vol = ms_now(), last_refresh = 0, last_stat = 0;
     u32 refreshes = 0;
 
     bool reset_dev = false;
@@ -210,12 +221,14 @@ static int run_session(void) {
                     const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
                     ring_push(&g_ring, src, size);
 
-                    if (stats < 200 && (captured++ % 200) == 1) {
-                        s16 peak = 0;
+                    s16 peak = 0;
+                    {
                         const s16 *p = (const s16 *)src;
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
+                    }
+                    if (peak > g_in_peak) g_in_peak = peak;
+                    if (stats < 200 && (captured++ % 200) == 1) {
                         LOG("t=%u in=%d out=%d ring=%u ur=%u b=%u g=%u sv=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), peak, g_usb.peak_out, ring_level(&g_ring), g_usb.underruns, g_usb.batches, g_gain, g_sysvol);
-                        g_usb.peak_out = 0;
                         stats++;
                     }
                     b->size = b->capacity;
@@ -228,6 +241,7 @@ static int run_session(void) {
                     if (now_ns > released_ns && (now_ns - released_ns) > 100000000ULL && ms_now() - last_refresh > 500) {
                         last_refresh = ms_now();
                         refreshes++;
+                        g_refresh_total++;
                         if (refreshes <= 30) LOG("rec stale %ums -> refresh #%u", (unsigned)((now_ns - released_ns) / 1000000ULL), refreshes);
                         rc = rec_refresh();
                         if (R_FAILED(rc)) { LOG("rec refresh failed: 0x%x", rc); break; }
@@ -244,6 +258,13 @@ static int run_session(void) {
         }
 
         if (ms_now() - last_vol >= 200) { last_vol = ms_now(); update_volume(); }
+        if (ms_now() - last_stat >= 3000) {
+            last_stat = ms_now();
+            g_stat_ur = g_usb.underruns;
+            g_out_peak = g_usb.peak_out; g_usb.peak_out = 0;
+            write_status();
+            g_in_peak = 0;
+        }
 
         if (ms_now() - last_poll >= 2000) {
             last_poll = ms_now();

@@ -86,6 +86,21 @@ static std::vector<std::string> read_log_tail(size_t max_lines) {
     return std::vector<std::string>(q.begin(), q.end());
 }
 
+static std::vector<std::string> read_status_lines() {
+    std::vector<std::string> v;
+    FILE *f = fopen(CFG_DIR "/status.txt", "r");
+    char buf[96];
+    while (f && v.size() < 3 && fgets(buf, sizeof(buf), f)) {
+        std::string l(buf);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        v.push_back(l);
+    }
+    if (f) fclose(f);
+    if (v.empty()) v.push_back("not running");
+    while (v.size() < 3) v.push_back("-");
+    return v;
+}
+
 class GuiLog : public tsl::Gui {
 public:
     virtual tsl::elm::Element *createUI() override {
@@ -112,9 +127,13 @@ public:
         toggle->setStateChangedListener([](bool on) { write_enabled(on); });
         list->addItem(toggle);
 
-        auto *status = new tsl::elm::ListItem("Status");
-        status->setValue(read_status());
-        list->addItem(status);
+        m_status = new tsl::elm::ListItem("Status");
+        m_vol    = new tsl::elm::ListItem("Volume");
+        m_audio  = new tsl::elm::ListItem("Audio");
+        refresh();
+        list->addItem(m_status);
+        list->addItem(m_vol);
+        list->addItem(m_audio);
 
         auto *gain = new tsl::elm::TrackBar("\uE13C");
         gain->setProgress((u8)read_gain());
@@ -131,6 +150,24 @@ public:
         frame->setContent(list);
         return frame;
     }
+
+    // refresh the live numbers about once a second
+    virtual void update() override {
+        if (++m_frames % 60 == 0) refresh();
+    }
+
+private:
+    void refresh() {
+        auto l = read_status_lines();
+        m_status->setValue(l[0]);
+        m_vol->setValue(l[1]);
+        m_audio->setValue(l[2]);
+    }
+
+    tsl::elm::ListItem *m_status = nullptr;
+    tsl::elm::ListItem *m_vol    = nullptr;
+    tsl::elm::ListItem *m_audio  = nullptr;
+    u32 m_frames = 0;
 };
 
 class OverlayMain : public tsl::Overlay {
