@@ -110,7 +110,7 @@ static void set_status(const char *st) {
     if (strncmp(last, st, sizeof(last)) == 0) return;
     strncpy(last, st, sizeof(last) - 1);
     FILE *f = fopen("sdmc:/config/usbaudio/status.txt", "w");
-    if (f) { fprintf(f, "%s\n", st); fclose(f); }
+    if (f) { fprintf(f, "%s v" APP_VERSION "\n", st); fclose(f); }
 }
 
 // Final volume = slider trim (gain/100)^2  x  console volume 0-15 (0.7236^(15-v), same curve as nx-btred).
