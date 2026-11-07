@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 #include <sys/stat.h>
 
 #include "ring.h"
@@ -43,8 +44,7 @@ void __appInit(void) {
         SetSysFirmwareVersion fw;
         rc = setsysGetFirmwareVersion(&fw);
         if (R_SUCCEEDED(rc)) hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro));
-        setsysExit();
-    }
+    }   // set:sys stays open: used to follow the console volume buttons
 
     rc = fsInitialize();
     if (R_FAILED(rc)) diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
@@ -53,6 +53,7 @@ void __appInit(void) {
 }
 
 void __appExit(void) {
+    setsysExit();
     fsdevUnmountAll();
     fsExit();
     smExit();
@@ -60,9 +61,9 @@ void __appExit(void) {
 
 // ---- logging / config ----
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
-#define APP_VERSION "0.2"
+#define APP_VERSION "0.3"
 static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
-static u32 g_gain = 20;           // percent; EarPods are loud (change with the overlay slider or config.ini)
+static u32 g_gain = 50;           // percent; EarPods are loud (change with the overlay slider or config.ini)
 
 // Open/append/close on every line: an always-open file is not committed to the SD until closed,
 // so it would never show up when the card is read on a PC.
@@ -112,6 +113,18 @@ static void set_status(const char *st) {
     if (f) { fprintf(f, "%s\n", st); fclose(f); }
 }
 
+// Final volume = slider trim (gain/100)^2  x  console volume 0-15 (0.7236^(15-v), same curve as nx-btred).
+// The recorded signal is taken BEFORE the console volume, so we apply it ourselves.
+static u32 g_sysvol = 15;
+static u32 g_mul = 2500;          // 1/10000 units, recomputed by update_volume()
+
+static void update_volume(void) {
+    SetSysAudioVolume v;
+    if (R_SUCCEEDED(setsysGetAudioVolume(SetSysAudioDevice_Console, &v)) && v.volume <= 15) g_sysvol = v.volume;
+    u32 sys_mul = (g_sysvol == 0) ? 0 : (u32)(10000.0f * powf(0.7236f, (float)(15 - (int)g_sysvol)));
+    g_mul = (g_gain * g_gain) * sys_mul / 10000;
+}
+
 // ---- streaming session ----
 #define RECN 4
 static Ring         g_ring;
@@ -129,11 +142,23 @@ static Result rec_arm(int i) {
     return audrec_append(&g_rec, b);
 }
 
+// nx-btred: "If audrec gets out of sync (when switching apps), we need to refresh it."
+// -> close the recorder and open a new one.
+static Result rec_refresh(void) {
+    audrec_stop(&g_rec);
+    audrec_close(&g_rec);
+    Result rc = audrec_open(&g_rec, 48000, g_aruid);
+    if (R_FAILED(rc)) return rc;
+    for (int i = 0; i < RECN; i++) rec_arm(i);
+    return audrec_start(&g_rec);
+}
+
 // returns 0 = no device (idle), 1 = session ended (error / unplug)
 static int run_session(void) {
     ring_init(&g_ring);
 
-    Result rc = usbout_open(&g_usb, &g_ring, g_gain);
+    update_volume();
+    Result rc = usbout_open(&g_usb, &g_ring, g_mul);
     if (rc == UO_NOT_FOUND) { usbout_close(&g_usb, false); return 0; }
     if (R_FAILED(rc)) {
         LOG("usb open failed: 0x%x", rc);
@@ -157,7 +182,8 @@ static int run_session(void) {
     rc = audrec_start(&g_rec);
     LOG("audrec start: 0x%x", rc);
     set_status("streaming");
-    u64 last_poll = ms_now();
+    u64 last_poll = ms_now(), last_vol = ms_now(), last_refresh = 0;
+    u32 refreshes = 0;
 
     bool reset_dev = false;
     int timeouts = 0, stats = 0;
@@ -174,7 +200,8 @@ static int run_session(void) {
                 eventClear(&g_rec.ev);
                 AudRecBuffer *done[RECN];
                 u32 n = 0;
-                audrec_released(&g_rec, done, RECN, &n);
+                u64 released_ns = 0;
+                audrec_released(&g_rec, done, RECN, &n, &released_ns);
                 for (u32 i = 0; i < n; i++) {
                     AudRecBuffer *b = done[i];
                     u32 size = (u32)b->size;
@@ -187,12 +214,24 @@ static int run_session(void) {
                         s16 peak = 0;
                         const s16 *p = (const s16 *)src;
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
-                        LOG("t=%u in=%d out=%d ring=%u ur=%u b=%u g=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), peak, g_usb.peak_out, ring_level(&g_ring), g_usb.underruns, g_usb.batches, g_gain);
+                        LOG("t=%u in=%d out=%d ring=%u ur=%u b=%u g=%u sv=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), peak, g_usb.peak_out, ring_level(&g_ring), g_usb.underruns, g_usb.batches, g_gain, g_sysvol);
                         g_usb.peak_out = 0;
                         stats++;
                     }
                     b->size = b->capacity;
                     audrec_append(&g_rec, b);
+                }
+
+                // stale recording clock => the recorder lost sync with the running app: recreate it
+                if (n > 0) {
+                    u64 now_ns = armTicksToNs(armGetSystemTick());
+                    if (now_ns > released_ns && (now_ns - released_ns) > 100000000ULL && ms_now() - last_refresh > 500) {
+                        last_refresh = ms_now();
+                        refreshes++;
+                        if (refreshes <= 30) LOG("rec stale %ums -> refresh #%u", (unsigned)((now_ns - released_ns) / 1000000ULL), refreshes);
+                        rc = rec_refresh();
+                        if (R_FAILED(rc)) { LOG("rec refresh failed: 0x%x", rc); break; }
+                    }
                 }
             } else {
                 eventClear(g_usb.ev);
@@ -204,17 +243,19 @@ static int run_session(void) {
             break;
         }
 
+        if (ms_now() - last_vol >= 200) { last_vol = ms_now(); update_volume(); }
+
         if (ms_now() - last_poll >= 2000) {
             last_poll = ms_now();
             poll_config();
             if (!g_enabled) { LOG("disabled from overlay, ending session"); break; }
         }
 
-        rc = usbout_pump(&g_usb, &g_ring, g_gain);
+        rc = usbout_pump(&g_usb, &g_ring, g_mul);
         if (R_FAILED(rc)) {
             LOG("usb err 0x%x b=%u ur=%u, restarting stream", rc, g_usb.batches, g_usb.underruns);
             usbout_close(&g_usb, false);
-            rc = usbout_open(&g_usb, &g_ring, g_gain);
+            rc = usbout_open(&g_usb, &g_ring, g_mul);
             if (R_FAILED(rc)) { LOG("stream restart failed: 0x%x", rc); reset_dev = true; break; }
             LOG("stream restarted, frame0=%u", g_usb.frame0);
         }

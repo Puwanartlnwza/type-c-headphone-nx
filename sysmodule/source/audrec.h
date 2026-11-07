@@ -21,5 +21,5 @@ Result audrec_open(AudRec *r, u32 sample_rate, u64 aruid);
 Result audrec_start(AudRec *r);
 void   audrec_stop(AudRec *r);
 Result audrec_append(AudRec *r, AudRecBuffer *b);
-Result audrec_released(AudRec *r, AudRecBuffer **out, u32 max, u32 *count);
+Result audrec_released(AudRec *r, AudRecBuffer **out, u32 max, u32 *count, u64 *released_ns);
 void   audrec_close(AudRec *r);

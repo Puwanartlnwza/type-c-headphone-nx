@@ -53,7 +53,7 @@ Result audrec_append(AudRec *r, AudRecBuffer *b) {
     );
 }
 
-Result audrec_released(AudRec *r, AudRecBuffer **out, u32 max, u32 *count) {
+Result audrec_released(AudRec *r, AudRecBuffer **out, u32 max, u32 *count, u64 *released_ns) {
     // GetReleasedFinalOutputRecorderBuffersAuto (cmd 9)
     u64 ids[8];
     if (max > 8) max = 8;
@@ -63,7 +63,8 @@ Result audrec_released(AudRec *r, AudRecBuffer **out, u32 max, u32 *count) {
         .buffer_attrs = { SfBufferAttr_HipcAutoSelect | SfBufferAttr_Out },
         .buffers = { { ids, sizeof(ids) } },
     );
-    if (R_FAILED(rc)) { *count = 0; return rc; }
+    if (R_FAILED(rc)) { *count = 0; *released_ns = 0; return rc; }
+    *released_ns = o.released;   // time the buffer was filled (same clock as the system tick)
     u32 n = (u32)o.count;
     if (n > max) n = max;
     for (u32 i = 0; i < n; i++) out[i] = (AudRecBuffer *)(uintptr_t)ids[i];
