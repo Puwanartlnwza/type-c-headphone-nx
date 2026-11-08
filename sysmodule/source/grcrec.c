@@ -21,8 +21,8 @@ bool arb_accept(int src, s32 peak) {
 #define G_TRANSFER(st, buf, sz, a, b, c) grcdTransfer(GrcStream_Audio, (buf), (sz), (a), (b), (c))
 #define G_CLOSE(st)                      grcdExit()
 
-#define MAXW   8
-#define WSTACK 0x8000
+#define MAXW   3
+#define WSTACK 0x4000
 #define ABUF   0x1000
 
 static Thread g_thr[MAXW];

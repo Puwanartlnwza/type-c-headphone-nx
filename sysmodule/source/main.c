@@ -23,7 +23,7 @@ static void stage(const char *msg) {
 }
 
 // ---- libnx sysmodule plumbing ----
-#define INNER_HEAP_SIZE 0x60000
+#define INNER_HEAP_SIZE 0x30000
 u32 __nx_applet_type = AppletType_None;
 u32 __nx_fs_num_sessions = 1;
 size_t nx_inner_heap_size = INNER_HEAP_SIZE;
@@ -62,7 +62,7 @@ void __appExit(void) {
 
 // ---- logging / config ----
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
-#define APP_VERSION "0.4"
+#define APP_VERSION "0.4.1"
 static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
 static u32 g_gain = 50;
 static u32 g_sysvol = 15;         // console volume 0-15
@@ -264,7 +264,10 @@ static int run_session(void) {
         if (ms_now() - last_pidpoll >= 1000) {            // new application => new grc session
             last_pidpoll = ms_now();
             u64 pid = 0;
-            if (R_FAILED(pmdmntGetApplicationProcessId(&pid))) pid = 0;
+            if (R_SUCCEEDED(pmdmntInitialize())) {
+                if (R_FAILED(pmdmntGetApplicationProcessId(&pid))) pid = 0;
+                pmdmntExit();
+            }
             if (pid != last_pid) { last_pid = pid; LOG("application pid=%llu -> restart grc worker", (unsigned long long)pid); grcrec_start(&g_ring); }
         }
         if (ms_now() - last_stat >= 3000) {
@@ -318,7 +321,6 @@ int main(void) {
     while (R_FAILED(usbHsInitialize())) svcSleepThread(1000000000ULL);
     stage("usbHsInitialize ok, entering main loop");
     LOG("usb:hs ready");
-    { Result pr = pmdmntInitialize(); LOG("pmdmnt init: 0x%x", pr); }
 
     for (;;) {
         poll_config();
