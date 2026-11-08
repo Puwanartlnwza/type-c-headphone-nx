@@ -12,6 +12,7 @@
 #include "ring.h"
 #include "audrec.h"
 #include "usbout.h"
+#include "grcrec.h"
 
 // Startup breadcrumbs: appended to sdmc:/usbaudio_stage.txt (SD root) so we can see how far we got.
 static void stage(const char *msg) {
@@ -61,7 +62,7 @@ void __appExit(void) {
 
 // ---- logging / config ----
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
-#define APP_VERSION "0.3"
+#define APP_VERSION "0.4"
 static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
 static u32 g_gain = 50;
 static u32 g_sysvol = 15;         // console volume 0-15
@@ -116,7 +117,7 @@ static void write_status(void) {
     if (!f) return;
     fprintf(f, "%s v" APP_VERSION "\n", g_state);
     fprintf(f, "sys=%u slider=%u mul=%u\n", g_sysvol, g_gain, g_mul);
-    fprintf(f, "in=%d out=%d ur=%u rf=%u\n", g_in_peak, g_out_peak, g_stat_ur, g_refresh_total);
+    fprintf(f, "rec=%d grc=%d out=%d ur=%u rf=%u\n", g_in_peak, g_grc_peak, g_out_peak, g_stat_ur, g_refresh_total);
     fclose(f);
 }
 
@@ -193,6 +194,8 @@ static int run_session(void) {
     rc = audrec_start(&g_rec);
     LOG("audrec start: 0x%x", rc);
     set_status("streaming");
+    grcrec_start(&g_ring);
+    u64 last_pid = 0, last_pidpoll = 0;
     u64 last_poll = ms_now(), last_vol = ms_now(), last_refresh = 0, last_stat = 0;
     u32 refreshes = 0;
 
@@ -219,7 +222,6 @@ static int run_session(void) {
                     if (size == 0 || size > b->capacity) size = (u32)b->capacity;
                     size &= ~3u;
                     const u8 *src = (const u8 *)(uintptr_t)b->sample_buffer;
-                    ring_push(&g_ring, src, size);
 
                     s16 peak = 0;
                     {
@@ -227,6 +229,7 @@ static int run_session(void) {
                         for (u32 k = 0; k < size / 2; k++) { s16 a = p[k] < 0 ? -p[k] : p[k]; if (a > peak) peak = a; }
                     }
                     if (peak > g_in_peak) g_in_peak = peak;
+                    if (arb_accept(SRC_REC, peak)) ring_push(&g_ring, src, size);
                     if (stats < 200 && (captured++ % 200) == 1) {
                         LOG("t=%u in=%d out=%d ring=%u ur=%u b=%u g=%u sv=%u", (unsigned)(armTicksToNs(armGetSystemTick()) / 1000000ULL), peak, g_usb.peak_out, ring_level(&g_ring), g_usb.underruns, g_usb.batches, g_gain, g_sysvol);
                         stats++;
@@ -258,12 +261,19 @@ static int run_session(void) {
         }
 
         if (ms_now() - last_vol >= 200) { last_vol = ms_now(); update_volume(); }
+        if (ms_now() - last_pidpoll >= 1000) {            // new application => new grc session
+            last_pidpoll = ms_now();
+            u64 pid = 0;
+            if (R_FAILED(pmdmntGetApplicationProcessId(&pid))) pid = 0;
+            if (pid != last_pid) { last_pid = pid; LOG("application pid=%llu -> restart grc worker", (unsigned long long)pid); grcrec_start(&g_ring); }
+        }
         if (ms_now() - last_stat >= 3000) {
             last_stat = ms_now();
             g_stat_ur = g_usb.underruns;
             g_out_peak = g_usb.peak_out; g_usb.peak_out = 0;
             write_status();
             g_in_peak = 0;
+            g_grc_peak = 0;
         }
 
         if (ms_now() - last_poll >= 2000) {
@@ -282,6 +292,7 @@ static int run_session(void) {
         }
     }
 
+    grcrec_stop();
     audrec_stop(&g_rec);
     audrec_close(&g_rec);
     usbout_close(&g_usb, reset_dev);
@@ -307,6 +318,7 @@ int main(void) {
     while (R_FAILED(usbHsInitialize())) svcSleepThread(1000000000ULL);
     stage("usbHsInitialize ok, entering main loop");
     LOG("usb:hs ready");
+    { Result pr = pmdmntInitialize(); LOG("pmdmnt init: 0x%x", pr); }
 
     for (;;) {
         poll_config();
