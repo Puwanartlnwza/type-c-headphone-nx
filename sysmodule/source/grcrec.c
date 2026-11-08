@@ -14,10 +14,12 @@ bool arb_accept(int src, s32 peak) {
 }
 
 // ---- thin wrappers: all libnx grc:d calls live here so signature fixes stay in one place ----
-#define G_OPEN(st)                      grcdServiceOpen((st), GrcStream_Audio)
-#define G_BEGIN(st)                     grcdServiceBegin((st))
-#define G_TRANSFER(st, buf, sz, a, b, c) grcdServiceTransfer((st), (buf), (sz), (a), (b), (c))
-#define G_CLOSE(st)                     grcdServiceClose((st))
+// libnx here exposes a single global grc:d session: grcdInitialize / grcdBegin / grcdTransfer / grcdExit
+// (the compiler suggested "grcdTransfer"; if another signature is reported, fix it only in these four lines)
+#define G_OPEN(st)                       grcdInitialize()
+#define G_BEGIN(st)                      grcdBegin(GrcStream_Audio)
+#define G_TRANSFER(st, buf, sz, a, b, c) grcdTransfer(GrcStream_Audio, (buf), (sz), (a), (b), (c))
+#define G_CLOSE(st)                      grcdExit()
 
 #define MAXW   8
 #define WSTACK 0x8000
