@@ -14,10 +14,10 @@ bool arb_accept(int src, s32 peak) {
 }
 
 // ---- thin wrappers: all libnx grc:d calls live here so signature fixes stay in one place ----
-// libnx here exposes a single global grc:d session: grcdInitialize / grcdBegin / grcdTransfer / grcdExit
-// (the compiler suggested "grcdTransfer"; if another signature is reported, fix it only in these four lines)
+// libnx grc.h (verified from the compiler): Result grcdBegin(void);
+//   Result grcdTransfer(GrcStream stream, void* buf, size_t size, u32 *num_frames, u32 *data_size, u64 *start_timestamp);
 #define G_OPEN(st)                       grcdInitialize()
-#define G_BEGIN(st)                      grcdBegin(GrcStream_Audio)
+#define G_BEGIN(st)                      grcdBegin()
 #define G_TRANSFER(st, buf, sz, a, b, c) grcdTransfer(GrcStream_Audio, (buf), (sz), (a), (b), (c))
 #define G_CLOSE(st)                      grcdExit()
 
@@ -51,14 +51,14 @@ static void worker(void *p) {
             opened = true;
         }
 
-        u32 unk = 0;
-        u64 sz = 0, ts = 0;
-        Result rc = G_TRANSFER(&st, buf, ABUF, &unk, &sz, &ts);   // blocks until audio is available
+        u32 nframes = 0, sz = 0;
+        u64 ts = 0;
+        Result rc = G_TRANSFER(&st, buf, ABUF, &nframes, &sz, &ts);   // blocks until audio is available
         if (a->gen != g_gen) break;                                // superseded while blocked
         if (R_FAILED(rc)) { G_CLOSE(&st); opened = false; svcSleepThread(200000000ULL); continue; }
 
         if (sz > ABUF) sz = ABUF;
-        sz &= ~3ULL;
+        sz &= ~3u;
         if (sz == 0) continue;
 
         s32 peak = 0;
