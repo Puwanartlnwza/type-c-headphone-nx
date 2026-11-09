@@ -62,9 +62,10 @@ void __appExit(void) {
 
 // ---- logging / config ----
 static const char *g_log_path = NULL;     // set in main(); NULL = logging off
-#define APP_VERSION "0.4.1"
+#define APP_VERSION "0.4.2"
 static u64 g_aruid = 0;           // config.ini: aruid=<hex>, only read when a session starts
 static u32 g_gain = 50;
+static u32 g_grc = 0;             // config.ini: grc=1 turns the grc:d game-audio capture on (default off)
 static u32 g_sysvol = 15;         // console volume 0-15
 static u32 g_mul = 2500;          // final multiplier, 1/10000 units (see update_volume)
 static s32 g_in_peak = 0;         // loudest captured sample since the last status write
@@ -95,6 +96,7 @@ static void load_config(void) {
         unsigned long long a;
         if (sscanf(line, "gain=%u", &v) == 1 && v <= 100) g_gain = v;
         if (sscanf(line, "aruid=%llx", &a) == 1) g_aruid = (u64)a;
+        if (sscanf(line, "grc=%u", &v) == 1) g_grc = v ? 1 : 0;
     }
     fclose(f);
 }
@@ -194,7 +196,8 @@ static int run_session(void) {
     rc = audrec_start(&g_rec);
     LOG("audrec start: 0x%x", rc);
     set_status("streaming");
-    grcrec_start(&g_ring);
+    bool grc_on = false;
+    if (g_grc) { grcrec_start(&g_ring); grc_on = true; LOG("grc worker on"); }
     u64 last_pid = 0, last_pidpoll = 0;
     u64 last_poll = ms_now(), last_vol = ms_now(), last_refresh = 0, last_stat = 0;
     u32 refreshes = 0;
@@ -261,7 +264,7 @@ static int run_session(void) {
         }
 
         if (ms_now() - last_vol >= 200) { last_vol = ms_now(); update_volume(); }
-        if (ms_now() - last_pidpoll >= 1000) {            // new application => new grc session
+        if (grc_on && ms_now() - last_pidpoll >= 1000) {  // new application => new grc session
             last_pidpoll = ms_now();
             u64 pid = 0;
             if (R_SUCCEEDED(pmdmntInitialize())) {
@@ -284,6 +287,8 @@ static int run_session(void) {
             poll_config();
             if (!g_enabled) { LOG("disabled from overlay, ending session"); break; }
         }
+        if (g_grc && !grc_on) { grcrec_start(&g_ring); grc_on = true; LOG("grc worker on"); }
+        if (!g_grc && grc_on) { grcrec_stop(); grc_on = false; LOG("grc worker off"); }
 
         rc = usbout_pump(&g_usb, &g_ring, g_mul);
         if (R_FAILED(rc)) {
@@ -295,7 +300,7 @@ static int run_session(void) {
         }
     }
 
-    grcrec_stop();
+    if (grc_on) grcrec_stop();
     audrec_stop(&g_rec);
     audrec_close(&g_rec);
     usbout_close(&g_usb, reset_dev);

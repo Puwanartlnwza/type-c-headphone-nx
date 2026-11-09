@@ -36,24 +36,26 @@ static void write_enabled(bool on) {
     fclose(f);
 }
 
-static int read_gain() {
-    int gain = 50;
+static int  g_gain_cur = 50;
+static bool g_grc_cur = false;
+
+static void load_cfg() {
     FILE *f = fopen(CFG_DIR "/config.ini", "r");
-    if (!f) return gain;
+    if (!f) return;
     char line[64];
     while (fgets(line, sizeof(line), f)) {
         unsigned v;
-        if (sscanf(line, "gain=%u", &v) == 1 && v <= 100) gain = (int)v;
+        if (sscanf(line, "gain=%u", &v) == 1 && v <= 100) g_gain_cur = (int)v;
+        if (sscanf(line, "grc=%u", &v) == 1) g_grc_cur = v != 0;
     }
     fclose(f);
-    return gain;
 }
 
-static void write_gain(int gain) {
+static void save_cfg() {
     ensure_dir();
     FILE *f = fopen(CFG_DIR "/config.ini", "w");
     if (!f) return;
-    fprintf(f, "gain=%d\n", gain);
+    fprintf(f, "gain=%d\ngrc=%d\n", g_gain_cur, g_grc_cur ? 1 : 0);
     fclose(f);
 }
 
@@ -123,6 +125,7 @@ public:
         auto *frame = new tsl::elm::OverlayFrame("USB Audio", "EarPods bridge");
         auto *list  = new tsl::elm::List();
 
+        load_cfg();
         auto *toggle = new tsl::elm::ToggleListItem("Enabled", read_enabled());
         toggle->setStateChangedListener([](bool on) { write_enabled(on); });
         list->addItem(toggle);
@@ -136,8 +139,8 @@ public:
         list->addItem(m_audio);
 
         auto *gain = new tsl::elm::TrackBar("\uE13C");
-        gain->setProgress((u8)read_gain());
-        gain->setValueChangedListener([](u8 value) { write_gain(value); });
+        gain->setProgress((u8)g_gain_cur);
+        gain->setValueChangedListener([](u8 value) { g_gain_cur = value; save_cfg(); });
         list->addItem(gain);
 
         auto *logItem = new tsl::elm::ListItem("View log");
@@ -146,6 +149,10 @@ public:
             return false;
         });
         list->addItem(logItem);
+
+        auto *grc = new tsl::elm::ToggleListItem("grc (risky, can crash)", g_grc_cur);
+        grc->setStateChangedListener([](bool on) { g_grc_cur = on; save_cfg(); });
+        list->addItem(grc);
 
         frame->setContent(list);
         return frame;
